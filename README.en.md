@@ -96,7 +96,7 @@ The frontend runs at http://127.0.0.1:5174/ and the local API at http://127.0.0.
 
 ## Data and Privacy
 
-The default data directory remains %LOCALAPPDATA%/AIAssistantStudio and stores authorization, tasks, SQLite data, and screenshots. The legacy directory name is retained for upgrade compatibility and does not change with the product display name. Model requests send questions and necessary context to the model service configured by the user.
+The default data directory is `.mumu` under the user profile, for example `%USERPROFILE%/.mumu`, and stores authorization, tasks, SQLite data, and screenshots. On upgrade, Mumu copies the legacy `%LOCALAPPDATA%/AIAssistantStudio` directory into the new location without deleting the old data. Model requests send questions and necessary context to the model service configured by the user.
 
 ~~~text
 logs/

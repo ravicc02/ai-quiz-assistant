@@ -1,6 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { attendanceRunning, attendanceRunnable, attendanceStates, attendanceKinds, attendanceMaterialLabels, attendanceWindowOpen, attendanceWindowLabel } from '../src/features/attendance/lib/model.js';
+import {
+  attendanceAutoEffectiveInterval,
+  attendanceAutoPhase,
+  attendanceBatchDisplayStatus,
+  attendanceCourseFilterSelection,
+  attendanceConfigurationDue,
+  attendanceKinds,
+  attendanceMaterialLabels,
+  attendancePollDelay,
+  attendanceRunnable,
+  attendanceRunning,
+  attendanceScanFeedback,
+  attendanceStates,
+  attendanceWindowLabel,
+  attendanceWindowOpen,
+} from '../src/features/attendance/lib/model.js';
 import { supportsBusiness, accountsForBusiness } from '../src/features/platforms/lib/catalog.js';
 import { api } from '../src/app/api.js';
 import { attendanceLocation } from '../src/features/attendance/lib/model.js';
@@ -35,6 +50,88 @@ test('the visible attendance window uses China time including the year', () => {
   assert.ok(label.includes('2026') && label.includes('11/14') && label.includes('00:05') && label.includes('01:05'), label);
 });
 
+test('automatic attendance windows enter prewarm and burst phases in China time', () => {
+  const group = {
+    interval_seconds: 60,
+    windows: [{ days: [1], start: '10:00', end: '10:10' }],
+  };
+  assert.equal(attendanceAutoPhase(group, new Date('2026-11-16T09:58:59+08:00')), 'outside');
+  assert.equal(attendanceAutoPhase(group, new Date('2026-11-16T09:59:30+08:00')), 'prewarm');
+  assert.equal(attendanceAutoPhase(group, new Date('2026-11-16T10:00:00+08:00')), 'burst');
+  assert.equal(attendanceAutoPhase(group, new Date('2026-11-16T10:03:01+08:00')), 'normal');
+  assert.equal(attendanceAutoPhase(group, new Date('2026-11-16T10:10:00+08:00')), 'outside');
+  assert.equal(attendanceAutoEffectiveInterval(group, new Date('2026-11-16T10:00:10+08:00')), 5);
+  assert.equal(attendanceAutoEffectiveInterval(group, new Date('2026-11-16T09:59:30+08:00')), 20);
+  assert.equal(attendanceAutoEffectiveInterval({}, new Date('2026-11-16T10:10:00+08:00')), 30);
+  const overnight = { windows: [{ days: [1], start: '23:00', end: '01:00' }] };
+  assert.equal(attendanceAutoPhase(overnight, new Date('2026-11-16T23:01:00+08:00')), 'burst');
+  assert.equal(attendanceAutoPhase(overnight, new Date('2026-11-17T00:30:00+08:00')), 'normal');
+  assert.equal(attendanceAutoPhase({ windows: [] }, new Date('2026-11-16T23:30:00+08:00')), 'outside');
+});
+
+test('course filters survive partial account failures but drop stale courses after a complete fetch', () => {
+  const courses = [{ name: '计算机科学' }, { name: '软件工程' }];
+  assert.deepEqual(
+    attendanceCourseFilterSelection(['计算机科学', '旧课程'], courses, false),
+    ['计算机科学'],
+  );
+  assert.deepEqual(
+    attendanceCourseFilterSelection(['计算机科学', '旧课程'], courses, true),
+    ['计算机科学', '旧课程'],
+  );
+});
+
+test('auto group status reflects the latest batch instead of waiting forever', () => {
+  assert.equal(attendanceBatchDisplayStatus({
+    status: 'awaiting_input',
+    items: [{ status: 'awaiting_input' }],
+  }), 'awaiting_input');
+  assert.equal(attendanceBatchDisplayStatus({
+    status: 'finished',
+    items: [{ status: 'manual_required' }, { status: 'awaiting_input' }],
+  }), 'awaiting_input');
+  assert.equal(attendanceBatchDisplayStatus({
+    status: 'finished',
+    items: [{ status: 'succeeded' }, { status: 'already_signed' }],
+  }), 'succeeded');
+  assert.equal(attendanceBatchDisplayStatus({
+    status: 'running',
+    items: [{ status: 'running' }],
+  }), 'running');
+});
+
+test('manual scan feedback reports pending and unknown work instead of a false success', () => {
+  assert.deepEqual(attendanceScanFeedback({
+    status: 'awaiting_input',
+    items: [{ status: 'awaiting_input' }, { status: 'awaiting_input' }],
+  }), {
+    kind: 'error',
+    message: '检测完成：2 个账号待补充素材或输入',
+  });
+  assert.deepEqual(attendanceScanFeedback({
+    status: 'needs_review',
+    items: [{ status: 'unknown' }],
+  }), {
+    kind: 'error',
+    message: '检测完成：1 个账号需要先核对结果，未重复提交',
+  });
+  assert.deepEqual(attendanceScanFeedback({
+    status: 'completed',
+    items: [{ status: 'succeeded' }, { status: 'already_signed' }],
+  }), {
+    kind: 'success',
+    message: '检测完成：2 个账号已签到',
+  });
+});
+
+test('attendance polling separates active work from idle configuration refresh', () => {
+  assert.equal(attendancePollDelay(true), 750);
+  assert.equal(attendancePollDelay(false), 8000);
+  assert.equal(attendanceConfigurationDue(0, 60000), true);
+  assert.equal(attendanceConfigurationDue(1000, 60999), false);
+  assert.equal(attendanceConfigurationDue(1000, 61000), true);
+});
+
 test('attendance scopes include only explicitly supported platforms and preserve account identity', () => {
   const accounts = [{ id: 'cx1', platform: 'chaoxing' }, { id: 'edu', platform: 'educoder' }, { id: 'cx2', platform: 'chaoxing', capabilities: { attendance: false } }];
   assert.deepEqual(accountsForBusiness(accounts, 'attendance').map(account => account.id), ['cx1']);
@@ -55,6 +152,7 @@ test('unknown submissions require reconciliation while missing input and cancell
   assert.equal(attendanceStates.unknown, '待核对');
   assert.equal(attendanceKinds.location, '位置');
   assert.equal(attendanceKinds.photo, '拍照');
+  assert.equal(attendanceStates.manual_required, '需人工处理');
   assert.equal(attendanceMaterialLabels.photo, '使用账号照片素材');
   assert.equal(attendanceMaterialLabels.location, '使用位置签到素材');
 });
@@ -71,8 +169,10 @@ test('attendance groups and relay settings use local scoped APIs without sending
     await api.renameAttendanceQrGroup('group-one', '计算机科学 2 组');
     await api.revokeAttendanceQrGroup('group-one');
     await api.attendanceAutoGroups();
-    await api.createAttendanceAutoGroup({ name: '自动组', account_ids: ['account-a'], kinds: ['normal', 'code'], interval_seconds: 60, enabled: true, location: null });
+    await api.attendanceAutoGroupCourses(['account-a', 'account-b']);
+    await api.createAttendanceAutoGroup({ name: '自动组', account_ids: ['account-a'], kinds: ['normal', 'code'], course_filters: ['计算机科学', '软件工程'], interval_seconds: 60, enabled: true, location: null });
     await api.updateAttendanceAutoGroup('auto-one', { enabled: false });
+    await api.scanAttendanceAutoGroup('auto-one');
     await api.deleteAttendanceAutoGroup('auto-one');
     await api.attendanceRelay();
     await api.testAttendanceRelay({ base_url: 'https://sign.example.com', admin_secret: 'x'.repeat(32) });
@@ -82,9 +182,14 @@ test('attendance groups and relay settings use local scoped APIs without sending
     assert.deepEqual(JSON.parse(calls[4].body), { name: '计算机科学 1 组', account_ids: ['account-a'], pin: '', base_url: '' });
     assert.equal(calls[5].method, 'PATCH');
     assert.equal(calls[6].method, 'DELETE');
-    assert.ok(calls[11].url.endsWith('/relay'));
-    assert.ok(calls[12].url.endsWith('/relay/test'));
-    assert.equal(calls[13].method, 'PUT');
+    assert.equal(calls[8].url, 'http://127.0.0.1:8877/api/attendance/auto-groups/courses');
+    assert.deepEqual(JSON.parse(calls[8].body), { account_ids: ['account-a', 'account-b'] });
+    assert.deepEqual(JSON.parse(calls[9].body).course_filters, ['计算机科学', '软件工程']);
+    assert.equal(calls[11].method, 'POST');
+    assert.ok(calls[11].url.endsWith('/auto-groups/auto-one/scan'));
+    assert.ok(calls[13].url.endsWith('/relay'));
+    assert.ok(calls[14].url.endsWith('/relay/test'));
+    assert.equal(calls[15].method, 'PUT');
     for (const call of calls) {
       assert.ok(!call.url.includes('chaoxing.com'));
       assert.ok(!/cookie|password|storage_state|platform_user_id/.test(call.body || ''));

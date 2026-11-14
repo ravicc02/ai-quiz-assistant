@@ -3,8 +3,10 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const http = require("node:http");
 const product = require("../product.json");
+const { resolveDataRoot } = require("./data-root.cjs");
 const { allowedProjectLink } = require("./external-links.cjs");
 const { createBootstrap, verifyBackendHealth } = require("./bootstrap.cjs");
+const { readWindowsLocation } = require("./windows-location.cjs");
 
 let backendProcess = null;
 let mainWindow = null;
@@ -14,9 +16,7 @@ app.setName(product.name);
 if (process.platform === "win32") app.setAppUserModelId(product.appId);
 
 function dataRoot() {
-  return process.env.MUMU_DATA
-    || process.env.ANSWER_STUDIO_DATA
-    || path.join(process.env.LOCALAPPDATA || app.getPath("userData"), product.dataDirectory);
+  return resolveDataRoot({ home:app.getPath("home"), product });
 }
 
 function configuredPythonCommand() {
@@ -185,6 +185,34 @@ for (const action of ["get", "check", "install"]) {
   });
 }
 
+function loginItemOptions() {
+  return { path:process.execPath,args:[] };
+}
+
+function autoLaunchSupported() {
+  return process.platform === "win32" && app.isPackaged;
+}
+
+ipcMain.handle("app:get-auto-launch", event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error("开机自启设置来源无效");
+  }
+  if (!autoLaunchSupported()) return { supported:false,enabled:false };
+  const settings = app.getLoginItemSettings(loginItemOptions());
+  return { supported:true,enabled:Boolean(settings.openAtLogin) };
+});
+
+ipcMain.handle("app:set-auto-launch", (event,enabled) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error("开机自启设置来源无效");
+  }
+  if (typeof enabled !== "boolean") throw new Error("开机自启设置值无效");
+  if (!autoLaunchSupported()) throw new Error("开机自启仅支持安装后的 Windows 版本");
+  app.setLoginItemSettings({ ...loginItemOptions(),openAtLogin:enabled });
+  const settings = app.getLoginItemSettings(loginItemOptions());
+  return { supported:true,enabled:Boolean(settings.openAtLogin) };
+});
+
 ipcMain.handle("app:open-data-directory", async () => {
   const target = dataRoot();
   const error = await shell.openPath(target);
@@ -197,4 +225,25 @@ ipcMain.handle("app:open-log-directory", async () => {
   const error = await shell.openPath(logsRoot);
   if(error) throw new Error(error);
   return logsRoot;
+});
+
+ipcMain.handle("app:open-location-settings", async (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error("定位设置来源无效");
+  }
+  if (process.platform !== "win32") throw new Error("当前系统不支持 Windows 定位设置");
+  await shell.openExternal("ms-settings:privacy-location");
+  return true;
+});
+
+ipcMain.handle("app:get-windows-location", async (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error("定位请求来源无效");
+  }
+  if (process.platform !== "win32") throw new Error("当前系统不支持 Windows 定位");
+  try {
+    return await readWindowsLocation();
+  } catch {
+    throw new Error("无法读取 Windows 当前位置，请检查系统定位和隐私权限");
+  }
 });

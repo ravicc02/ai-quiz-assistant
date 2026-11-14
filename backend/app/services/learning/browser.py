@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 from playwright.async_api import Error as PlaywrightError, async_playwright
 
 from ..assignments import chaoxing
+from ..assignments.quiz_adapter import extract_questions, fill_answers, submit_answers
 from ..runtime.browser import chrome_executable, COURSE_BROWSER_ARGS, TaskBrowserProfile
 from ..runtime.screenshots import capture_screenshot_segments
 from .live import LiveBrowserChannel
@@ -252,6 +253,31 @@ class LearningBrowser:
     async def read_resource(self, frame):
         async with self.io_lock:
             return await self.call(frame, "readResource")
+
+    async def extract_quiz_questions(self, frame):
+        async with self.io_lock:
+            return await extract_questions(frame)
+
+    async def fill_quiz_answers(self, frame, answer_sheet):
+        async with self.io_lock:
+            return await fill_answers(frame, answer_sheet)
+
+    async def submit_quiz_answers(self, frame):
+        async with self.io_lock:
+            try:
+                return await submit_answers(frame)
+            except PlaywrightError:
+                self.ensure_connected()
+                return {
+                    "clicked": True,
+                    "confirmed": False,
+                    "pending": True,
+                    "reason": "提交操作后题目页面已跳转，等待平台目录确认",
+                }
+
+    async def quiz_is_open(self, frame):
+        async with self.io_lock:
+            return bool((await self.call(frame, "snapshot")).get("quiz"))
 
     async def advance_resource_card(self):
         async with self.io_lock:

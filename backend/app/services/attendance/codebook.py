@@ -21,4 +21,13 @@ def find_sign_code(payload):
             code = normalize_code(candidates.get(key))
             if code:
                 return code
+    elif isinstance(candidates, str):
+        code = normalize_code(candidates)
+        if code:
+            return code
+    if str(payload.get('result')) == '1':
+        for key in ('signCode', 'signcode', 'sign_code', 'msg', 'message'):
+            code = normalize_code(payload.get(key))
+            if code:
+                return code
     return ''

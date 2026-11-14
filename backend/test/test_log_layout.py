@@ -40,13 +40,28 @@ class LogLayoutTests(unittest.TestCase):
                     '127.0.0.1:123 - "OPTIONS /api/jobs HTTP/1.1" 204 No Content']
         for message in messages:
             self.assertFalse(useful_record({"component": "uvicorn.access", "message": message}))
+        for message in (
+            'HTTP Request: GET https://sign.example/api/admin/groups "HTTP/1.1 200 OK"',
+            'HTTP Request: OPTIONS https://sign.example/api/qr/session "HTTP/1.1 204 No Content"',
+        ):
+            self.assertFalse(useful_record({"component": "httpx", "level": "info", "message": message}))
         self.assertFalse(useful_record({"code": "assignment.heartbeat"}))
         for row in ({"code": "assignment.heartbeat", "level": "warning"},
                     {"component": "uvicorn.access", "message": '"GET /api/jobs HTTP/1.1" 500'},
                     {"component": "answer-studio.api", "message": "HTTP POST /api/jobs -> 200"},
+                    {"component": "httpx", "level": "info", "message": 'HTTP Request: GET https://sign.example/api/health "HTTP/1.1 503 Service Unavailable"'},
+                    {"component": "httpx", "level": "info", "message": 'HTTP Request: POST https://sign.example/api/admin/groups "HTTP/1.1 200 OK"'},
+                    {"component": "httpx", "level": "warning", "message": 'HTTP Request: GET https://sign.example/api/health "HTTP/1.1 200 OK"'},
+                    {"code": "attendance.collection_error", "level": "warning", "stack": "Traceback\nRuntimeError: unexpected"},
+                    {"code": "attendance.collection_error", "level": "warning", "message": "Attendance course collection unavailable"},
                     {"code": "assignment.heartbeat", "stack": "error stack"},
                     {"code": "api.response", "data": {"http_status": 409}}):
             self.assertTrue(useful_record(row), row)
+        self.assertFalse(useful_record({
+            "code": "attendance.collection_error",
+            "level": "warning",
+            "stack": "app.services.attendance.contracts.AttendanceError: platform throttled",
+        }))
 
     def test_legacy_upgrade_filters_noise_keeps_errors_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -62,7 +77,7 @@ class LogLayoutTests(unittest.TestCase):
             journal.prepare()
             self.assertEqual(journal.main.read_bytes(), original)
             self.assertEqual([row["code"] for row in iter_records(original.decode().splitlines(keepends=True))], ["task.exception"])
-            self.assertEqual(json.loads(journal.state_path.read_text())["format_version"], 2)
+            self.assertEqual(json.loads(journal.state_path.read_text())["format_version"], 4)
 
     def test_bad_legacy_record_is_preserved_for_review(self):
         rows = list(iter_records(["broken legacy record\n"], preserve_invalid=True))

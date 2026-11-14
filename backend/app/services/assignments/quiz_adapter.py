@@ -21,6 +21,13 @@ EXTRACT_QUESTIONS_SCRIPT = r"""
     if (fieldCount > 0) return "long";
     return "unknown";
   };
+  const isSelected = (element) => {
+    const input = element.matches?.("input") ? element : element.querySelector?.("input");
+    const className = String(element.className || "");
+    return element.getAttribute?.("aria-checked") === "true"
+      || Boolean(input?.checked)
+      || /(?:^|\s)(?:check_answer|check_answer_dx|selected|active|checked)(?:\s|$)/.test(className);
+  };
   const annotateOption = (element, key, label) => {
     const normalizedKey = clean(key);
     if (!normalizedKey) return null;
@@ -57,6 +64,32 @@ EXTRACT_QUESTIONS_SCRIPT = r"""
     });
     return result;
   };
+  const genericOptions = (root) => {
+    const seen = new Set();
+    const result = [];
+    const candidates = [
+      ...root.querySelectorAll("input[type=radio],input[type=checkbox]"),
+      ...root.querySelectorAll("[role=radio],[role=checkbox],.ans-videoquiz-opt,[class*='option']"),
+    ];
+    candidates.forEach((input, index) => {
+      const element = input.matches("input")
+        ? input.closest("label,li,.ans-videoquiz-opt,[class*='option']") || input
+        : input;
+      if (element.closest("[data-mumu-option]") || !element.getClientRects().length) return;
+      const text = clean(element.innerText || element.textContent || input.value || "");
+      if (!text || /^(提交|交卷|继续|确定|确认|下一题)$/.test(text)) return;
+      const labeled = text.slice(0, 80).match(/(?:^|\s)([A-F])(?:[.、:：)\s]|$)/i);
+      const rawValue = clean(input.value);
+      const key = labeled?.[1]?.toUpperCase()
+        || (/^[A-F]$/i.test(rawValue) ? rawValue.toUpperCase() : "")
+        || String.fromCharCode(65 + index);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      const option = annotateOption(element, key, text);
+      if (option) result.push(option);
+    });
+    return result;
+  };
   const textFields = (root) => {
     const iframes = Array.from(root.querySelectorAll("iframe"));
     return Array.from(root.querySelectorAll("textarea")).map((textarea, index) => {
@@ -80,14 +113,28 @@ EXTRACT_QUESTIONS_SCRIPT = r"""
 
   const questions = [];
   const units = [];
-  const questionNodes = Array.from(
-    document.querySelectorAll(".questionLi[id^='question']")
-  );
+  const questionNodes = Array.from(document.querySelectorAll(".questionLi[id^='question']"));
+  if (!questionNodes.length) {
+    document.querySelectorAll(".TiMu").forEach((element) => {
+      if (element.getClientRects().length) questionNodes.push(element);
+    });
+  }
+  document.querySelectorAll(".ans-videoquiz").forEach((element) => {
+    if (element.getClientRects().length && !element.closest(".questionLi[id^='question'],.TiMu")) {
+      questionNodes.push(element);
+    }
+  });
 
   questionNodes.forEach((root, questionIndex) => {
-    const qid = root.id.replace("question", "");
-    const heading = root.querySelector("h3");
-    const type = clean(heading?.querySelector(".colorShallow")?.innerText || "");
+    const rawQid = String(root.id || "").replace("question", "")
+      || clean(root.getAttribute("data-qid") || root.getAttribute("data"))
+      || `video${questionIndex + 1}`;
+    const qid = String(questionIndex + 1);
+    const heading = root.querySelector("h3,.ans-videoquiz-title,.Zy_TItle");
+    const type = clean(heading?.querySelector(".colorShallow")?.innerText
+      || root.getAttribute("data-type")
+      || root.querySelector(".read_type,.question-type")?.innerText
+      || "");
     const questionText = clean(
       heading?.innerText || root.innerText.slice(0, 1200)
     );
@@ -126,6 +173,7 @@ EXTRACT_QUESTIONS_SCRIPT = r"""
           options,
           groups: [],
           fields,
+          verification: hiddenId ? "hidden" : "selection",
           expected_values: kind === "single" ? 1
             : kind === "multiple" ? options.length
             : fields.length,
@@ -139,7 +187,7 @@ EXTRACT_QUESTIONS_SCRIPT = r"""
         const unitId = `q${qid}`;
         root.setAttribute("data-mumu-unit", unitId);
         root.setAttribute("data-mumu-kind", "shared");
-        annotateHiddenAnswer(root, `answer${qid}`);
+        annotateHiddenAnswer(root, `answer${rawQid}`);
         const groups = sharedGroups.map((group, groupIndex) => {
           group.setAttribute("data-mumu-shared-index", String(groupIndex));
           const options = spanOptions(group);
@@ -159,18 +207,22 @@ EXTRACT_QUESTIONS_SCRIPT = r"""
           options: [],
           groups,
           fields: [],
+          verification: "hidden",
           expected_values: groups.length,
         };
         question.unit_ids.push(unitId);
         units.push(unit);
       } else {
         const unitId = `q${qid}`;
-        const options = roleOptions(root);
+        const allOptions = [...roleOptions(root), ...spanOptions(root), ...genericOptions(root)];
+        const options = allOptions.filter((option, index) => allOptions.findIndex(item => item.key === option.key) === index);
         const fields = textFields(root);
-        const kind = questionKind(type, options.length > 0, fields.length);
+        const choiceType = root.querySelector("input[type=checkbox],[role=checkbox]") ? `${type} 多选题` : type;
+        const kind = questionKind(choiceType, options.length > 0, fields.length);
         root.setAttribute("data-mumu-unit", unitId);
         root.setAttribute("data-mumu-kind", kind);
-        annotateHiddenAnswer(root, `answer${qid}`);
+        const hiddenId = clean(root.querySelector("input[id^='answer']")?.id || "");
+        annotateHiddenAnswer(root, hiddenId);
         const unit = {
           unit_id: unitId,
           question_id: qid,
@@ -181,6 +233,7 @@ EXTRACT_QUESTIONS_SCRIPT = r"""
           options,
           groups: [],
           fields,
+          verification: hiddenId ? "hidden" : "selection",
           expected_values: kind === "single" ? 1
             : kind === "multiple" ? options.length
             : fields.length,
@@ -198,11 +251,10 @@ EXTRACT_QUESTIONS_SCRIPT = r"""
     unit.file_inputs = root.querySelectorAll('input[type="file"]').length;
     const hiddenId = root.getAttribute('data-mumu-hidden-id');
     const hidden = hiddenId ? document.getElementById(hiddenId) : null;
-    const selected = element => element.getAttribute('aria-checked') === 'true' || element.classList.contains('check_answer') || element.classList.contains('check_answer_dx');
     if (unit.kind === 'single' || unit.kind === 'multiple') {
-      unit.filled = Boolean(hidden?.value?.trim()) || [...root.querySelectorAll('[data-mumu-option]')].some(selected);
+      unit.filled = Boolean(hidden?.value?.trim()) || [...root.querySelectorAll('[data-mumu-option]')].some(isSelected);
     } else if (unit.kind === 'shared') {
-      unit.filled = unit.groups.length > 0 && [...root.querySelectorAll('.B-answerCon')].every(group => [...group.querySelectorAll('[data-mumu-option]')].some(selected));
+      unit.filled = unit.groups.length > 0 && [...root.querySelectorAll('.B-answerCon')].every(group => [...group.querySelectorAll('[data-mumu-option]')].some(isSelected));
     } else {
       unit.filled = unit.fields.length > 0 && unit.fields.every(field => {
         const textarea = [...root.querySelectorAll('[data-mumu-field]')].find(node => Number(node.getAttribute('data-mumu-field')) === field.index);
@@ -237,8 +289,13 @@ FILL_ANSWERS_SCRIPT = r"""
   );
   const results = [];
   const answeredQuestionIds = new Set();
-  const isSelected = option => option.getAttribute('aria-checked') === 'true'
-    || option.classList.contains('check_answer') || option.classList.contains('check_answer_dx');
+  const isSelected = (option) => {
+    const input = option.matches?.('input') ? option : option.querySelector?.('input');
+    const className = String(option.className || '');
+    return option.getAttribute?.('aria-checked') === 'true'
+      || Boolean(input?.checked)
+      || /(?:^|\s)(?:check_answer|check_answer_dx|selected|active|checked)(?:\s|$)/.test(className);
+  };
   const setField = (textarea, iframeId, value) => {
     const text = clean(value);
     const html = `<p>${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</p>`;
@@ -271,7 +328,7 @@ FILL_ANSWERS_SCRIPT = r"""
     if (!byId.has(unitId)) return;
     const kind = root.getAttribute("data-mumu-kind");
     const values = byId.get(unitId) || [];
-    const questionRoot = root.closest(".questionLi[id^='question']");
+    const questionRoot = root.closest(".questionLi[id^='question'],.TiMu,.ans-videoquiz");
     const questionId = questionRoot?.id?.replace("question", "") || "";
     if (values.some((value) => clean(value))) {
       if (questionId) answeredQuestionIds.add(questionId);
@@ -336,6 +393,7 @@ FILL_ANSWERS_SCRIPT = r"""
         kind,
         values,
         checked,
+        has_hidden: Boolean(hidden),
         hidden_id: hiddenId,
         hidden_value: hidden?.value || "",
       });
@@ -387,9 +445,10 @@ FILL_ANSWERS_SCRIPT = r"""
     results.forEach(result => {
       const unit = unitRoots.find(node => node.getAttribute('data-mumu-unit') === result.unit_id);
       if (!unit) return;
+      const requiresHidden = Boolean(unit.getAttribute('data-mumu-hidden-id'));
       const complete = result.kind === 'shared'
         ? result.values.length === unit.querySelectorAll('.B-answerCon').length && result.values.every(value => clean(value))
-        : ['single','multiple'].includes(result.kind) ? Boolean(result.hidden_value) && result.checked.length > 0
+        : ['single','multiple'].includes(result.kind) ? (!requiresHidden || Boolean(result.hidden_value)) && result.checked.length > 0
         : result.field_values.length > 0 && result.field_values.every(value => clean(value));
       unit.setAttribute('data-mumu-filled', String(complete));
     });
@@ -398,6 +457,93 @@ FILL_ANSWERS_SCRIPT = r"""
   });
   return JSON.stringify(results);
 })
+"""
+
+
+SUBMIT_ANSWERS_SCRIPT = r"""
+(async () => {
+  const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const visible = (node) => Boolean(node?.getClientRects().length)
+    && getComputedStyle(node).visibility !== "hidden"
+    && getComputedStyle(node).display !== "none";
+  const questionRoots = [...document.querySelectorAll(".questionLi[id^='question'],.TiMu,.ans-videoquiz")]
+    .filter(visible);
+  if (!questionRoots.length) {
+    return JSON.stringify({ clicked: false, confirmed: false, reason: "当前页面没有可提交的题目" });
+  }
+  const videoQuiz = document.querySelector(".ans-videoquiz");
+  const scope = questionRoots[0].closest("form") || document;
+  const controls = (root) => [...root.querySelectorAll(
+    "button,a,input[type=button],input[type=submit],[role=button],[onclick],[class*='btn'],[class*='button'],.layui-layer-btn0,.layui-layer-btn1,.el-button,.ant-btn"
+  )]
+    .filter((node) => visible(node) && !node.disabled && node.getAttribute("aria-disabled") !== "true");
+  const submitLabels = new Set(["提交", "交卷", "提交答案", "提交作业", "完成测验", "完成答题", "保存并提交"]);
+  let submit = controls(scope).find((node) => submitLabels.has(clean(node.innerText || node.value || node.textContent)))
+    || controls(document).find((node) => submitLabels.has(clean(node.innerText || node.value || node.textContent))
+      && !node.closest(".questionLi,.TiMu"));
+  if (!submit && videoQuiz) {
+    const quizLabels = new Set(["确定", "确认", "继续", "继续学习", "下一题"]);
+    submit = controls(videoQuiz).find((node) => quizLabels.has(clean(node.innerText || node.value || node.textContent)));
+  }
+  if (!submit) {
+    return JSON.stringify({ clicked: false, confirmed: false, reason: "未找到可用的题目提交入口" });
+  }
+  if (submit.getAttribute("data-mumu-submit-clicked") === "true") {
+    return JSON.stringify({ clicked: true, confirmed: false, pending: true, already_clicked: true, reason: "本次页面已点击过提交" });
+  }
+  submit.setAttribute("data-mumu-submit-clicked", "true");
+
+  const feedbackSelector = "#dialogToast,.toast,[role=status],[role=alert],.layui-layer-content,.el-message__content,.ant-message-notice-content,.ans-videoquiz";
+  const beforeFeedback = new Set([...document.querySelectorAll(feedbackSelector)].filter(visible)
+    .map((node) => clean(node.innerText || node.textContent)));
+  const beforeUrl = location.href;
+  submit.click();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  const confirmLabels = new Set(["确定", "确认", "确认提交", "继续提交", "提交", "知道了"]);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const dialogRoots = [...document.querySelectorAll(".layui-layer,.modal,.dialog,[role=dialog],.el-dialog,.ant-modal,.ans-videoquiz")]
+      .filter(visible);
+    for (const root of dialogRoots) {
+      const confirmation = controls(root).find((node) => node !== submit
+        && confirmLabels.has(clean(node.innerText || node.value || node.textContent)));
+      if (confirmation) {
+        confirmation.click();
+        attempt = 10;
+        break;
+      }
+    }
+    if (attempt >= 10) break;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    const messages = [...document.querySelectorAll(feedbackSelector)].filter(visible)
+      .map((node) => clean(node.innerText || node.textContent))
+      .filter(Boolean);
+    const fresh = messages.filter((message) => !beforeFeedback.has(message));
+    const error = fresh.find((message) => /提交失败|交卷失败|保存失败|答案错误|回答错误|未完成全部题目|请完成.*题/.test(message));
+    if (error) {
+      return JSON.stringify({ clicked: true, confirmed: false, failed: true, reason: error });
+    }
+    const success = fresh.find((message) => /提交成功|交卷成功|已提交|已完成测验|测验已完成|保存成功/.test(message));
+    if (success) {
+      return JSON.stringify({ clicked: true, confirmed: true, reason: success });
+    }
+    const questionsVisible = questionRoots.some((node) => node.isConnected && visible(node));
+    if (location.href !== beforeUrl || !questionsVisible) {
+      return JSON.stringify({ clicked: true, confirmed: false, pending: true, reason: "提交请求已发出，页面已离开题目状态" });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return JSON.stringify({
+    clicked: true,
+    confirmed: false,
+    pending: true,
+    reason: "提交请求已发出，等待平台目录或回执确认",
+  });
+})()
 """
 
 
@@ -425,6 +571,13 @@ async def fill_answers(
         FILL_ANSWERS_SCRIPT,
         answer_sheet.model_dump_json(),
     )
+    if isinstance(raw, str):
+        return json.loads(raw)
+    return raw
+
+
+async def submit_answers(page: Any) -> dict[str, Any]:
+    raw = await page.evaluate(SUBMIT_ANSWERS_SCRIPT)
     if isinstance(raw, str):
         return json.loads(raw)
     return raw

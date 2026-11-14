@@ -32,9 +32,9 @@ const groupCount = accountId => (
         <AccountAvatar :account="account" :size="32" />
         <div class="attendance-account-copy">
           <strong>{{ account.name }}</strong>
-          <small>{{ notes[account.id] || (account.status === 'ready' ? '已授权' : '待授权') }}</small>
+          <small v-if="notes[account.id] || account.status !== 'ready'">{{ notes[account.id] || '待授权' }}</small>
           <div class="attendance-profile-badges">
-            <span>{{ groupCount(account.id) }} 个分组</span>
+            <span v-if="groupCount(account.id)">{{ groupCount(account.id) }} 个分组</span>
             <span v-if="profiles[account.id]?.photo"><Image :size="11" />拍照素材</span>
             <span v-if="profiles[account.id]?.face"><Users :size="11" />人脸校验</span>
           </div>

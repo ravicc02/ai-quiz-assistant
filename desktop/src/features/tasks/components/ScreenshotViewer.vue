@@ -88,17 +88,17 @@ function retry() { failed.value = false; reload.value += 1; }
 
 <style scoped>
 .screenshot-viewer { display: flex; flex-direction: column; width: 100%; min-width: 0; min-height: 0; height: 100%; background: var(--surface); }
-.screenshot-toolbar { display: flex; align-items: center; gap: 2px; flex: none; padding: 5px 6px; border-bottom: 1px solid var(--line); }
-.screenshot-toolbar .icon-button { width: 26px; min-width: 26px; height: 27px; }
+.screenshot-toolbar { display: flex; align-items: center; gap: 4px; flex: none; min-height: 44px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.screenshot-toolbar .icon-button { width: 32px; min-width: 32px; height: 32px; }
 .screenshot-toolbar-spacer { flex: 1; }
-.screenshot-zoom { min-width: 34px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; text-align: center; }
-.screenshot-toolbar select { max-width: 120px; min-width: 84px; height: 27px; border: 0; border-radius: 4px; background: var(--surface); color: var(--muted); font-size: 11px; padding: 0 3px; }
+.screenshot-zoom { min-width: 34px; color: var(--muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; text-align: center; }
+.screenshot-toolbar select { max-width: 132px; min-width: 96px; height: 32px; border: 0; border-radius: var(--radius-control); background: var(--surface); color: var(--muted); font-size: var(--text-xs); padding: 0 6px; }
 .screenshot-toolbar :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .screenshot-toolbar button:disabled { opacity: .4; cursor: not-allowed; }
 .screenshot-viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .screenshot-page { position: relative; overflow: hidden; min-height: 0; }
 .screenshot-page > img { position: absolute; top: 0; left: 0; display: block; width: 100%; height: auto; max-height: none; min-height: 0; border: 0; border-radius: 0; object-fit: initial; }
-.screenshot-feedback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); background: var(--surface); font-size: 12px; }
+.screenshot-feedback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); background: var(--surface); font-size: var(--text-sm); }
 @media (hover: hover) { .screenshot-toolbar select:hover { background: var(--surface-muted); } }
 .screenshot-toolbar button:active:not(:disabled) { transform: translateY(1px); }
 </style>

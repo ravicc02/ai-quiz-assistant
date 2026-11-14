@@ -96,7 +96,7 @@ El frontend se ejecuta en http://127.0.0.1:5174/ y la API local en http://127.0.
 
 ## Datos y privacidad
 
-El directorio de datos predeterminado sigue siendo %LOCALAPPDATA%/AIAssistantStudio y guarda autorizaciones, tareas, datos SQLite y capturas. El nombre antiguo se mantiene por compatibilidad de actualización y no cambia con el nombre visible del producto. Las solicitudes al modelo envían las preguntas y el contexto necesario al servicio configurado por el usuario.
+El directorio de datos predeterminado es `.mumu` dentro del perfil del usuario, por ejemplo `%USERPROFILE%/.mumu`, y guarda autorizaciones, tareas, datos SQLite y capturas. Al actualizar, Mumu copia el directorio antiguo `%LOCALAPPDATA%/AIAssistantStudio` a la nueva ubicación sin borrar los datos anteriores. Las solicitudes al modelo envían las preguntas y el contexto necesario al servicio configurado por el usuario.
 
 ~~~text
 logs/

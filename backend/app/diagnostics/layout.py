@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 4
 IMPORTANT_FIELDS = ("message", "trace_id", "task_kind", "phase", "state", "sequence",
                     "elapsed_ms", "data", "stack", "source", "process_session",
                     "source_event_id", "event_id", "timestamp", "local_time", "local_date")
@@ -12,6 +12,12 @@ NOISE_CODES = {"assignment.heartbeat", "learning.heartbeat", "browser.frame", "b
 
 def useful_record(value):
     level = str(value.get("level", "info")).lower()
+    if (
+        value.get("code") == "attendance.collection_error"
+        and level == "warning"
+        and "AttendanceError:" in str(value.get("stack") or "")
+    ):
+        return False
     if level in {"warning", "warn", "error", "critical", "fatal"} or value.get("stack"):
         return True
     if value.get("code") in NOISE_CODES:
@@ -24,6 +30,10 @@ def useful_record(value):
     if component in {"uvicorn.access", "mumu.api", "answer-studio.api", ""} or value.get("code") == "legacy.text":
         # Only successful read traffic is noise. Mutations and every HTTP failure remain.
         if re.search(r'(?:HTTP )?(?:GET|HEAD|OPTIONS) [^\r\n]*?(?:HTTP/[\d.]+"? | -> |-> )(?:[23]\d\d)\b', message):
+            return False
+    if component == "httpx" and level == "info":
+        # Client request logs duplicate successful polling reads. Keep writes and failures.
+        if re.search(r'HTTP Request: (?:GET|HEAD|OPTIONS) [^\r\n]+ "HTTP/[\d.]+ (?:[23]\d\d)\b', message):
             return False
     if component in {"uvicorn.error", "websockets.server"} and level == "info":
         if message in {"connection open", "connection closed"} or re.search(r'WebSocket .* \[accepted\]$', message):

@@ -89,7 +89,7 @@ npm run desktop:web
 
 ## 数据与隐私
 
-默认数据目录继续使用 %LOCALAPPDATA%/AIAssistantStudio，保存授权、任务、SQLite 和截图。该旧目录名是升级兼容标识，不随产品展示名变更。模型请求会将题目及必要上下文发送到使用者配置的模型服务。
+默认数据目录为用户主目录下的 `.mumu`，例如 `%USERPROFILE%/.mumu`，保存授权、任务、SQLite 和截图。升级时会从旧的 `%LOCALAPPDATA%/AIAssistantStudio` 复制到新目录，旧数据不会被删除。模型请求会将题目及必要上下文发送到使用者配置的模型服务。
 
 ~~~text
 logs/

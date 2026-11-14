@@ -197,9 +197,10 @@ class PreferenceTests(unittest.IsolatedAsyncioTestCase):
             invalid = await client.patch("/api/preferences", json={"system": {"log_retention_days": 0}})
             self.assertEqual(invalid.status_code, 422)
             self.assertEqual((await client.get("/api/preferences")).json()["system"]["log_retention_days"], 14)
-            valid = await client.patch("/api/preferences", json={"learning": {"playback_rate": 1.5, "volume": 40}})
+            valid = await client.patch("/api/preferences", json={"learning": {"playback_rate": 1.5, "volume": 40, "auto_submit_quiz": False}})
             self.assertEqual(valid.status_code, 200)
             self.assertEqual((await client.get("/api/preferences")).json()["learning"]["playback_rate"], 1.5)
+            self.assertFalse((await client.get("/api/preferences")).json()["learning"]["auto_submit_quiz"])
 
     async def test_disabling_only_stops_queued_jobs_owned_by_automation(self):
         self.assignment("old"); self.enable()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import urlsplit
 
 
 PAGE_PROBE = r"""(...args) => {
@@ -43,6 +44,32 @@ PAGE_PROBE = r"""(...args) => {
 }"""
 
 
+def useful_request_failure(url, reason, resource_type=''):
+    failure = str(reason or '')
+    parsed = urlsplit(str(url or ''))
+    if 'net::ERR_ABORTED' in failure and str(resource_type or '') != 'document':
+        return False
+    if (
+        'net::ERR_BLOCKED_BY_ORB' in failure
+        and parsed.hostname == 'robot-lc.chaoxing.com'
+    ):
+        return False
+    return True
+
+
+def useful_http_failure(url, status, resource_type=''):
+    parsed = urlsplit(str(url or ''))
+    if (
+        int(status or 0) == 404
+        and str(resource_type or '') == 'stylesheet'
+        and parsed.hostname
+        and parsed.hostname.endswith('chaoxing.com')
+        and '/spacx/new/css/work-css-tpl.cssx' in parsed.path
+    ):
+        return False
+    return int(status or 0) >= 400
+
+
 async def capture_page(trace, page, name, focus=()):
     if not trace.available: return
     try:
@@ -58,14 +85,35 @@ def attach_network(trace, context):
     if not trace.available: return
     counts = {"network": 0}
     def response_received(response):
-        if response.status < 400 or counts["network"] >= 100: return
+        if (
+            counts["network"] >= 100
+            or not useful_http_failure(
+                response.url,
+                response.status,
+                response.request.resource_type,
+            )
+        ):
+            return
         counts["network"] += 1
         trace.record("browser.http_error", data={"url": response.url, "status": response.status,
             "method": response.request.method, "resource_type": response.request.resource_type}, component="browser", level="warning")
     def request_failed(request):
-        if counts["network"] >= 100: return
+        if (
+            counts["network"] >= 100
+            or not useful_request_failure(
+                request.url,
+                request.failure,
+                request.resource_type,
+            )
+        ):
+            return
         counts["network"] += 1
-        trace.record("browser.request_failed", data={"url": request.url, "method": request.method, "reason": request.failure}, component="browser", level="warning")
+        trace.record("browser.request_failed", data={
+            "url": request.url,
+            "method": request.method,
+            "reason": request.failure,
+            "resource_type": request.resource_type,
+        }, component="browser", level="warning")
     def page_opened(page):
         page.on("pageerror", lambda error: trace.record("browser.page_error", str(error), component="browser", level="warning"))
     context.on("response", response_received)

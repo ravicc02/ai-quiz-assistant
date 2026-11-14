@@ -33,9 +33,9 @@ def learning_router(service, guard_idle, guard_start, collection_lock):
 
     @router.get("/capabilities")
     async def capabilities():
-        return {"engine": "mumu-learning-resources-v1", "local": True, "platforms": [name for name,spec in CATALOG.items() if spec["learning"]],
-                "automatic": ["video", "audio"], "manual": ["quiz", "verification", "unknown"],
-                "resource_handlers": {"chaoxing": ["video", "audio", "document", "book", "audio_ppt", "hyperlink", "timed_reading"]},
+        return {"engine": "mumu-learning-resources-v2", "local": True, "platforms": [name for name,spec in CATALOG.items() if spec["learning"]],
+                "automatic": ["video", "audio", "document", "quiz"], "manual": ["verification", "unknown"],
+                "resource_handlers": {"chaoxing": ["video", "audio", "document", "book", "audio_ppt", "hyperlink", "timed_reading", "quiz"]},
                 "external_runtime_required": False, "userscript_manager_required": False}
 
     @router.get("/courses")

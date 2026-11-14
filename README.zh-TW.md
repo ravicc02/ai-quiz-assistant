@@ -96,7 +96,7 @@ npm run desktop:web
 
 ## 資料與隱私
 
-預設資料目錄仍為 %LOCALAPPDATA%/AIAssistantStudio，保存授權、任務、SQLite 與截圖。舊目錄名稱作為升級相容標識保留，不隨產品顯示名稱變更。模型請求會將題目與必要上下文傳送至使用者設定的模型服務。
+預設資料目錄為使用者主目錄下的 `.mumu`，例如 `%USERPROFILE%/.mumu`，保存授權、任務、SQLite 與截圖。升級時會從舊的 `%LOCALAPPDATA%/AIAssistantStudio` 複製到新目錄，舊資料不會被刪除。模型請求會將題目與必要上下文傳送至使用者設定的模型服務。
 
 ~~~text
 logs/

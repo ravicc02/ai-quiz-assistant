@@ -142,7 +142,7 @@ onUnmounted(() => { mounted = false; bootGeneration++; screenFeed?.dispose(); co
 </script>
 
 <template>
-  <section class="task-town company-workspace" aria-label="任务公司">
+  <section class="task-town company-workspace" aria-label="总控中心">
     <div class="town-toolbar">
       <div class="town-filters">
         <label class="town-search"><Search :size="15" /><input v-model="query" aria-label="搜索公司任务" placeholder="搜索任务、课程、账号"><button v-if="query" class="icon-button" type="button" title="清除搜索" aria-label="清除搜索" @click="query = ''"><X :size="13" /></button></label>
@@ -158,7 +158,7 @@ onUnmounted(() => { mounted = false; bootGeneration++; screenFeed?.dispose(); co
       </div>
     </div>
     <div ref="stage" class="town-stage" :class="{ 'has-selection': selected, 'is-roaming': roaming }">
-      <canvas ref="canvas" class="town-canvas" tabindex="0" role="application" aria-label="任务公司 3D 场景" aria-description="点击地面自动寻路，WASD 或方向键随时接管移动，空格跳跃。拖动转向，滚轮缩放，靠近角色或老板办公桌按 F 交互。"></canvas>
+      <canvas ref="canvas" class="town-canvas" tabindex="0" role="application" aria-label="总控中心 3D 场景" aria-description="点击地面自动寻路，WASD 或方向键随时接管移动，空格跳跃。拖动转向，滚轮缩放，靠近角色或老板办公桌按 F 交互。"></canvas>
       <div v-if="walkState === 'blocked'" class="company-navigation-feedback" role="status">该位置无法到达</div>
       <div v-if="loading || !ready" class="town-loading" role="status"><LoaderCircle :size="22" class="spin" /><span>{{ loading ? '正在进入公司' : '正在同步任务' }}</span></div>
       <div v-if="!loading && !graphicsError" class="town-overlay">

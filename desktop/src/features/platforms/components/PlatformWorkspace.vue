@@ -72,38 +72,38 @@ watch(() => props.modelValue, () => { query.value = ""; filter.value = "all"; })
 <style scoped>
 .platform-management { display: grid; grid-column: 2; grid-row: 2; grid-template-columns: 220px minmax(0,1fr); min-width: 0; min-height: 0; background: var(--surface); }
 .platform-catalog { border-right: 1px solid var(--line); background: var(--bg); padding: 25px 16px; overflow-y: auto; }
-.platform-catalog h2 { font-size: 13px; }
+.platform-catalog h2 { font-size: 14px; }
 .platform-catalog .platform-chip { margin-top: 18px; width: 100%; }
 .platform-accounts { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 28px 32px; }
 .platform-accounts-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 25px; border-bottom: 1px solid var(--line); }
 .platform-accounts-heading > div { display: flex; align-items: center; gap: 12px; }
-.platform-accounts-heading h1 { font-size: 20px; }
+.platform-accounts-heading h1 { font-size: 28px; line-height: 1.25; }
 .platform-account-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 0 18px; }
-.platform-account-tools h2 { display: flex; align-items: center; gap: 9px; font-size: 14px; }
+.platform-account-tools h2 { display: flex; align-items: center; gap: 9px; font-size: 15px; }
 .platform-account-tools > div { display: flex; align-items: center; gap: 16px; }
 .platform-account-tools .search-field { width: 200px; }
 .platform-records { flex: 1; min-height: 0; overflow: auto; padding-bottom: 150px; }
 .platform-account-table { width: 100%; border-collapse: collapse; table-layout: fixed; text-align: left; }
-.platform-account-table th { font-size: 11px; font-weight: 500; color: var(--muted); padding: 12px 14px; background: var(--bg); border-bottom: 1px solid var(--line); }
-.platform-account-table td { padding: 20px 14px; border-bottom: 1px solid var(--line); font-size: 12px; vertical-align: middle; }
+.platform-account-table th { font-size: var(--text-xs); font-weight: 500; color: var(--muted); padding: 12px 14px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.platform-account-table td { padding: 20px 14px; border-bottom: 1px solid var(--line); font-size: var(--text-sm); vertical-align: middle; }
 .platform-account-table th:first-child { width: 24%; }
 .platform-account-table th:nth-child(2) { width: 23%; }
 .platform-account-table th:nth-child(3) { width: 19%; }
 .platform-account-table th:last-child { width: 34%; }
-.platform-account-table tr { transition: background 150ms ease; }
+.platform-account-table tr { transition: background 150ms var(--ease); }
 .platform-account-table tbody tr:hover { background: var(--bg); }
 .platform-record-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.platform-record-name strong { overflow-wrap: anywhere; font-size: 13px; font-weight: 600; }
+.platform-record-name strong { overflow-wrap: anywhere; font-size: 14px; font-weight: 500; }
 .platform-record-name .account-avatar { flex: none; }
 .selected .platform-record-name .account-avatar { background: var(--accent-soft); color: var(--accent); }
 .platform-auth-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
 .platform-auth-status.ready { color: var(--green); }
 .platform-auth-status.login_error { color: var(--red); }
 .platform-auth-status.authorizing,.platform-auth-status.waiting { color: var(--orange); }
-.platform-auth-error { max-width: 230px; margin-top: 8px; color: var(--red); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.platform-auth-error { max-width: 230px; margin-top: 8px; color: var(--red); font-size: var(--text-xs); line-height: 1.6; overflow-wrap: anywhere; }
 .platform-account-table time { color: var(--muted); font-variant-numeric: tabular-nums; }
-.platform-record-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
-.platform-record-actions .button { font-size: 11px; min-height: 30px; padding: 5px 8px; }
+.platform-record-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.platform-record-actions .button { font-size: var(--text-xs); min-height: 32px; padding: 6px 10px; }
 .platform-record-actions .account-menu-wrap { position: relative; top: auto; right: auto; }
 .platform-record-actions .account-more { position: static; flex: none; }
 .platform-account-table th:last-child { text-align: right; }

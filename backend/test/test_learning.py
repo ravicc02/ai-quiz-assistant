@@ -303,6 +303,7 @@ class LearningTests(unittest.IsolatedAsyncioTestCase):
         events = self.service.store.events(run["id"])
         self.assertEqual(result["status"], "interrupted")
         self.assertEqual(result["auto_retry_count"], 3)
+        self.assertIn("请手动重试", result["error"])
         self.assertEqual(sum(event["kind"] == "auto_retry" for event in events), 3)
         self.assertTrue(any(event["kind"] == "retry_exhausted" for event in events))
 
@@ -441,6 +442,9 @@ class LearningTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             capabilities = (await client.get("/api/learning/capabilities")).json()
             self.assertFalse(capabilities["external_runtime_required"])
+            self.assertEqual(capabilities["engine"], "mumu-learning-resources-v2")
+            self.assertIn("quiz", capabilities["automatic"])
+            self.assertIn("quiz", capabilities["resource_handlers"]["chaoxing"])
             response = await client.post("/api/learning/runs", json={"course_id": self.course["id"]})
             self.assertEqual(response.status_code, 200, response.text)
             identifier = response.json()["id"]
@@ -455,6 +459,57 @@ class LearningTests(unittest.IsolatedAsyncioTestCase):
         self.service.store.recover()
         self.assertEqual(self.service.store.run(run["id"])["status"], "interrupted")
         self.assertIsNone(self.service.active(self.account["id"]))
+
+    async def test_restart_marks_exhausted_auto_retry_as_manual_interruption(self):
+        run = self.service.store.create_run(self.course["id"])
+        self.service.store.update(
+            run["id"],
+            status="running",
+            phase="learning",
+            auto_retry_count=3,
+        )
+        self.service.initialize()
+        result = self.service.store.run(run["id"])
+        self.assertEqual(result["status"], "interrupted")
+        self.assertEqual(result["phase"], "interrupted")
+        self.assertEqual(result["auto_retry_count"], 3)
+        self.assertIn("自动重试次数已用完", result["error"])
+        self.assertIn("请手动重试", result["error"])
+        self.assertNotIn(run["id"], self.service.tasks)
+        self.assertTrue(any(
+            event["kind"] == "retry_exhausted"
+            for event in self.service.store.events(run["id"])
+        ))
+        events = self.service.store.events(run["id"])
+        self.service.initialize()
+        self.assertEqual(
+            len([event for event in events if event["kind"] == "retry_exhausted"]),
+            len([
+                event for event in self.service.store.events(run["id"])
+                if event["kind"] == "retry_exhausted"
+            ]),
+        )
+
+    async def test_restart_normalizes_legacy_exhausted_pending_retry(self):
+        run = self.service.store.create_run(self.course["id"])
+        self.service.store.update(
+            run["id"],
+            status="interrupted",
+            phase="auto_retry_pending",
+            auto_retry_count=3,
+            error="本地服务重启，原浏览器会话已结束，将自动重新读取平台进度；已自动重试 3 次，仍未恢复。",
+        )
+        self.service.initialize()
+        result = self.service.store.run(run["id"])
+        self.assertEqual(result["status"], "interrupted")
+        self.assertEqual(result["phase"], "interrupted")
+        self.assertIn("自动恢复未完成", result["error"])
+        self.assertIn("请手动重试", result["error"])
+        self.assertNotIn("将自动重新读取平台进度", result["error"])
+        self.assertTrue(any(
+            event["kind"] == "retry_exhausted"
+            for event in self.service.store.events(run["id"])
+        ))
 
     async def test_service_restart_auto_resumes_running_work_and_skips_manual_pause(self):
         run = self.service.store.create_run(self.course["id"])
@@ -473,6 +528,22 @@ class LearningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.store.run(paused["id"])["auto_retry_count"], 0)
         await self.service.control(run["id"], "stop")
         await self.wait_until(lambda: run["id"] not in self.service.tasks)
+
+    async def test_restart_reopens_only_one_interrupted_run_per_course(self):
+        first = self.service.store.create_run(self.course["id"])
+        self.service.store.update(first["id"], status="interrupted", phase="auto_retry_pending")
+        second = self.service.store.create_run(self.course["id"])
+        self.service.store.update(second["id"], status="interrupted", phase="auto_retry_pending")
+        self.service.initialize()
+        await self.wait_until(lambda: any(
+            item["status"] in {"queued", "running"} for item in self.service.store.runs(self.account["id"])
+        ))
+        current = self.service.store.runs(self.account["id"])
+        self.assertEqual(sum(item["status"] in {"queued", "running"} for item in current), 1)
+        active = next(item for item in current if item["status"] in {"queued", "running"})
+        self.assertEqual(active["auto_retry_count"], 1)
+        await self.service.control(active["id"], "stop")
+        await self.wait_until(lambda: active["id"] not in self.service.tasks)
 
     async def test_account_deletion_cascades_learning_history(self):
         run = self.service.store.create_run(self.course["id"])

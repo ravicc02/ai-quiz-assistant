@@ -22,7 +22,7 @@ from app.diagnostics.bundle import build_bundle
 from app.diagnostics.logging import DiagnosticFormatter, TaskLogHandler, current_trace
 from app.diagnostics.layout import iter_records
 from app.diagnostics.privacy import Scrubber, task_scrubber
-from app.diagnostics.probe import capture_page
+from app.diagnostics.probe import capture_page, useful_http_failure, useful_request_failure
 from app.diagnostics.recorder import DiagnosticStore, NullTrace
 from app.diagnostics.routes import diagnostic_router, install_request_diagnostics
 from app.services.runtime.browser import chrome_executable
@@ -53,6 +53,38 @@ class DiagnosticTests(unittest.TestCase):
         self.trace = self.db.diagnostics.trace('assignment', self.job['id'])
 
     def tearDown(self): self.temp.cleanup()
+
+    def test_benign_provider_resource_failures_are_not_recorded_as_task_warnings(self):
+        self.assertFalse(useful_request_failure(
+            'https://mooc1.chaoxing.com/work.cssx',
+            'net::ERR_ABORTED',
+            'stylesheet',
+        ))
+        self.assertTrue(useful_request_failure(
+            'https://mooc1.chaoxing.com/course',
+            'net::ERR_ABORTED',
+            'document',
+        ))
+        self.assertFalse(useful_request_failure(
+            'https://robot-lc.chaoxing.com/sdk/CxRobotSdkJs.js',
+            'net::ERR_BLOCKED_BY_ORB',
+            'script',
+        ))
+        self.assertTrue(useful_request_failure(
+            'https://example.test/app.js',
+            'net::ERR_BLOCKED_BY_ORB',
+            'script',
+        ))
+        self.assertFalse(useful_http_failure(
+            'https://mooc1.chaoxing.com/mooc-ans/spacx/new/css/work-css-tpl.cssx?enc=test',
+            404,
+            'stylesheet',
+        ))
+        self.assertTrue(useful_http_failure(
+            'https://mooc1.chaoxing.com/mooc-ans/spacx/new/css/work-css-tpl.cssx?enc=test',
+            500,
+            'stylesheet',
+        ))
 
     def test_single_task_log_contains_context_evidence_errors_and_result(self):
         self.trace.snapshot('controls', {'unit_id': 'q22:r2', 'class': 'check_answer_dx',

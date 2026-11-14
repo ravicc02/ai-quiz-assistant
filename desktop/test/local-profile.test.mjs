@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { avatarFromFile, loadLocalProfile, localProfileKey, normalizeLocalProfile, saveLocalProfile } from "../src/features/accounts/lib/local-profile.js";
+import {
+  avatarCropMetrics,
+  avatarFromFile,
+  loadLocalProfile,
+  localProfileKey,
+  normalizeLocalProfile,
+  renderAvatarCrop,
+  saveLocalProfile,
+} from "../src/features/accounts/lib/local-profile.js";
 function storage(){const values=new Map();return{values,getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)};}
 
 test("local profile persists without changing platform account preferences",()=>{
@@ -31,6 +39,31 @@ test("avatar conversion uses the center square and frees the decoded bitmap",asy
   assert.equal(canvas.width,256);assert.equal(canvas.height,256);
   assert.deepEqual(calls[0].slice(1),[100,0,200,200,0,0,256,256]);
   assert.equal(result,"data:image/webp;base64,UklGRg==");assert.equal(closed,true);
+});
+test("avatar crop follows user zoom and drag while clamping the source square",()=>{
+  const bitmap={width:400,height:200};
+  const center=avatarCropMetrics(bitmap,{viewportSize:256,zoom:1});
+  assert.equal(center.sourceSize,200);
+  assert.equal(center.sourceX,100);
+  assert.equal(center.sourceY,0);
+  const zoomed=avatarCropMetrics(bitmap,{viewportSize:256,zoom:2,offsetX:1000,offsetY:1000});
+  assert.equal(zoomed.sourceSize,100);
+  assert.equal(zoomed.offsetX,384);
+  assert.equal(zoomed.offsetY,128);
+  assert.equal(zoomed.sourceX,0);
+  assert.equal(zoomed.sourceY,0);
+});
+test("avatar rendering uses the selected crop instead of the image center",()=>{
+  const calls=[];
+  const canvas={getContext:()=>({drawImage:(...args)=>calls.push(args)}),toDataURL:()=>"data:image/webp;base64,UklGRg=="};
+  renderAvatarCrop({width:400,height:200},{
+    viewportSize:256,
+    zoom:2,
+    offsetX:384,
+    offsetY:128,
+    canvasFactory:()=>canvas,
+  });
+  assert.deepEqual(calls[0].slice(1),[0,0,100,100,0,0,256,256]);
 });
 test("non-image and oversized avatar inputs fail before image decoding",async()=>{
   let decoded=false;

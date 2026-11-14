@@ -6,7 +6,7 @@
   "releaseApi": "https://api.github.com/repos/ravicc02/Mumu/releases/latest",
   "appId": "io.github.ravicc02.mumu",
   "legacyAppId": "local.ai.assignment.studio",
-  "dataDirectory": "AIAssistantStudio",
+  "dataDirectory": ".mumu",
   "artifactId": "Mumu",
   "backendExecutable": "mumu-backend.exe"
 }

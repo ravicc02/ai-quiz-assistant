@@ -31,7 +31,9 @@ test('legacy installation and data identifiers remain explicit compatibility ent
 
   assert.equal(product.legacyAppId, 'local.ai.assignment.studio');
   assert.equal(desktopPackage.build.nsis.guid, 'eb16fffb-9f96-5004-94a4-fb5b2f48fec9');
-  assert.equal(product.dataDirectory, 'AIAssistantStudio');
+  assert.equal(product.dataDirectory, '.mumu');
+  assert.match(backendProduct, /DATA_DIRECTORY = "\.mumu"/);
+  assert.match(backendProduct, /LEGACY_DATA_DIRECTORY = "AIAssistantStudio"/);
   assert.match(backendProduct, /DATABASE_FILENAME = "answer-studio\.sqlite3"/);
 });
 

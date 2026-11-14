@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -85,17 +86,66 @@ def parse_courses(payload):
         if not content.get('course') or content.get('state') != 0: continue
         data = content['course'].get('data')
         if not isinstance(data, list) or not data: raise AttendanceError('课程信息不完整，未将其当作空列表')
+        class_name = str(content.get('name') or '').strip()
+        course_name = str(data[0].get('name') or '未命名课程')
         course = {'course_id': upstream_id(data[0].get('id')), 'class_id': upstream_id(content.get('id')),
-                  'course_name': str(data[0].get('name') or '未命名课程')[:200]}
+                  'course_name': course_name[:200],
+                  'class_name': class_name[:200],
+                  'academic_year': parse_academic_year(class_name) or parse_academic_year(course_name),
+                  'begin_at': str(content.get('beginDate') or '')[:32],
+                  'end_at': str(content.get('endDate') or '')[:32],
+                  'is_retired': content.get('isretire') == 1}
         courses[(course['course_id'], course['class_id'])] = course
     return list(courses.values())
 
 
+def current_academic_year(now=None):
+    today = now or datetime.now()
+    return today.year if today.month >= 8 else today.year - 1
+
+
+def parse_academic_year(text):
+    value = str(text or '')
+    match = re.search(r'(\d{4})\s*[-–—~至]\s*(\d{4})', value)
+    if match:
+        start, end = int(match.group(1)), int(match.group(2))
+        return start if end == start + 1 else None
+    match = re.search(r'(\d{2})\s*[-–—~]\s*(\d{2})', value)
+    if not match:
+        return None
+    start, end = int(match.group(1)), int(match.group(2))
+    start = 1900 + start if start >= 70 else 2000 + start
+    end = 1900 + end if end >= 70 else 2000 + end
+    return start if end == start + 1 else None
+
+
+def course_in_current_year(course, year=None):
+    marked = course.get('academic_year')
+    target = year or current_academic_year()
+    if marked is not None:
+        return marked == target
+    begin = str(course.get('begin_at') or '').strip()
+    if begin:
+        try:
+            started = datetime.fromisoformat(begin)
+        except ValueError:
+            started = None
+        if started:
+            started_year = started.year if started.month >= 8 else started.year - 1
+            return started_year == target
+    return not course.get('is_retired')
+
+
 def parse_activities(payload, course):
-    if not isinstance(payload, dict) or payload.get('result') != 1 or not isinstance(payload.get('data'), dict) or not isinstance(payload['data'].get('activeList'), list):
+    if not isinstance(payload, dict) or payload.get('result') != 1:
+        raise AttendanceError('活动列表格式未确认，未清除原有记录')
+    data = payload.get('data')
+    if data is None or data == {}:
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get('activeList'), list):
         raise AttendanceError('活动列表格式未确认，未清除原有记录')
     records = []
-    for row in payload['data']['activeList']:
+    for row in data['activeList']:
         if str(row.get('activeType')) not in {'2', '54', '74'} or str(row.get('status')) != '1': continue
         records.append({**{key:course[key] for key in ('course_id','class_id','course_name')}, 'upstream_id': upstream_id(row.get('id')), 'title': str(row.get('nameOne') or '签到')[:200],
                         'kind': KINDS.get(str(row.get('otherId')), 'unknown'), 'start_time':row.get('startTime'), 'end_time':row.get('endTime')})
@@ -110,6 +160,10 @@ def classify_receipt(text):
     if clean in {'您已签到', '您已签到过了', '你已经签到过了', '已签到'}: return 'already_signed', '平台显示已签到，无须重复提交'
     if '90002' in clean:
         return 'awaiting_input', '签到码或手势码未通过平台校验，请核对后重试'
+    if 'photoautherror' in clean.lower():
+        return 'manual_required', '平台要求学习通 App 现场拍摄凭证（不是人脸校验），普通照片无法代交，请在学习通 App 内完成'
+    if 'photomissing' in clean.lower():
+        return 'awaiting_input', '平台要求拍照签到素材，请为该账号配置照片后执行'
     if is_expired_qr_message(clean):
         return 'awaiting_input', '二维码无效或已过期，请重新扫码'
     match = re.search(r'errorLocation[_\-]?(\d+(?:\.\d+)?)?', clean, re.IGNORECASE)

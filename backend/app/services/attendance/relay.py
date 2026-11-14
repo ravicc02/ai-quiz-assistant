@@ -25,10 +25,22 @@ from .contracts import AttendanceError, SignInput, is_expired_qr_message
 
 
 logger = logging.getLogger('mumu.attendance')
+GROUP_IDLE_POLL_SECONDS = 1.0
+GROUP_ACTIVE_POLL_SECONDS = 0.35
+GROUP_STATUS_CACHE_IDLE_SECONDS = 0.9
+GROUP_STATUS_CACHE_ACTIVE_SECONDS = 0.25
 
 
 def _sha256(value) -> str:
     return hashlib.sha256(str(value or '').encode()).hexdigest()
+
+
+def relay_monitor_delay(identifier, failures):
+    attempt = max(1, int(failures or 1))
+    base = min(30, 2 ** min(5, attempt - 1))
+    digest = hashlib.sha1(f'relay-monitor:{identifier}'.encode()).digest()
+    jitter = int.from_bytes(digest[:2], 'big') % 250 / 1000
+    return min(30, base + jitter)
 
 
 def _fernet(secret) -> Fernet:
@@ -546,6 +558,32 @@ def relay_app(store: RelayStore, admin_secret: str):
             name=payload.name, items=payload.items, base_url=base_url, pin=payload.pin,
         )
 
+    @app.get('/api/admin/groups')
+    async def admin_get_groups(ids: str = '', x_mumu_share_secret: str = Header(default='')):
+        admin_authorized(x_mumu_share_secret)
+        identifiers = list(dict.fromkeys(
+            value for value in str(ids or '').split(',')
+            if re.fullmatch(r'[A-Za-z0-9_-]{1,64}', value)
+        ))[:100]
+        groups = []
+        for identifier in identifiers:
+            try:
+                status = store.public_group(
+                    store.group_by_id(identifier),
+                    unlocked=True,
+                    admin=True,
+                )
+                groups.append({
+                    'id':identifier,
+                    'status':status['status'],
+                    'run_id':status.get('run_id'),
+                    'capture_text':status.get('capture_text') or '',
+                    'can_capture':status.get('can_capture', False),
+                })
+            except KeyError:
+                continue
+        return {'groups':groups}
+
     @app.get('/api/admin/groups/{identifier}')
     async def admin_get_group(identifier: str, x_mumu_share_secret: str = Header(default='')):
         admin_authorized(x_mumu_share_secret)
@@ -691,6 +729,37 @@ class RelayClient:
             raise AttendanceError(self._error(response))
         return response.json()
 
+    async def groups(self, identifiers):
+        identifiers = list(dict.fromkeys(
+            str(identifier) for identifier in identifiers or [] if identifier
+        ))[:100]
+        if not identifiers:
+            return {}
+        response = await self.http().get(
+            self.base_url + '/api/admin/groups',
+            params={'ids':','.join(identifiers)},
+            headers=self.headers,
+        )
+        if response.status_code == 404:
+            loaded = await asyncio.gather(
+                *(self.group(identifier) for identifier in identifiers),
+                return_exceptions=True,
+            )
+            if len(identifiers) == 1 and isinstance(loaded[0], BaseException):
+                raise loaded[0]
+            return {
+                identifier:value for identifier,value in zip(identifiers,loaded)
+                if not isinstance(value, BaseException)
+            }
+        if response.status_code >= 400:
+            raise AttendanceError(self._error(response))
+        payload = response.json()
+        return {
+            str(item['id']):item
+            for item in payload.get('groups',[])
+            if isinstance(item,dict) and item.get('id')
+        }
+
     async def group_status(self, identifier, run_id, payload):
         response = await self.http().post(
             self.base_url + '/api/admin/groups/' + identifier + '/runs/' + run_id + '/status',
@@ -760,6 +829,9 @@ class RemoteShareGateway:
         self.client = None
         self.link_cipher = None
         self.tasks = {}
+        self.status_cache = {}
+        self.status_cached_at = 0
+        self.status_lock = asyncio.Lock()
         self.configure_sync(base_url, admin_secret)
 
     def configure_sync(self, base_url, admin_secret):
@@ -783,14 +855,14 @@ class RemoteShareGateway:
         self.tasks.clear()
         if self.client: await self.client.close()
         self.configure_sync(base_url,admin_secret)
+        self.status_cache = {}
+        self.status_cached_at = 0
 
     def settings(self):
-        cname_target = os.environ.get('MUMU_ATTENDANCE_RELAY_CNAME_TARGET','').strip()
         return {
             'base_url':self.base_url,
             'admin_secret_configured':bool(self.admin_secret),
             'configured':self.configured,
-            'cname_target':cname_target,
         }
 
     async def ensure_started(self):
@@ -861,14 +933,68 @@ class RemoteShareGateway:
     def _group_items(self, batch, account_ids):
         return self._public(batch,'open',account_ids)
 
+    async def _polled_group(self, remote_group_id):
+        async with self.status_lock:
+            identifiers = [remote_group_id]
+            if hasattr(self.service.store,'live_qr_groups'):
+                identifiers = list(dict.fromkeys(
+                    record['remote_group_id']
+                    for record in self.service.store.live_qr_groups()
+                    if record.get('remote_group_id')
+                ))
+            if len(identifiers) <= 1:
+                if hasattr(self.client,'group'):
+                    return await self.client.group(remote_group_id)
+                loaded = await self.client.groups(identifiers)
+                if remote_group_id not in loaded:
+                    raise AttendanceError('扫码分组状态不可用')
+                return loaded[remote_group_id]
+            current = time.monotonic()
+            active = any(
+                item.get('status') in {'captured','queued','signing'}
+                for item in self.status_cache.values()
+            )
+            cache_seconds = (
+                GROUP_STATUS_CACHE_ACTIVE_SECONDS
+                if active else GROUP_STATUS_CACHE_IDLE_SECONDS
+            )
+            if (
+                self.status_cache
+                and current - self.status_cached_at < cache_seconds
+                and remote_group_id in self.status_cache
+            ):
+                return self.status_cache[remote_group_id]
+            if hasattr(self.client,'groups'):
+                self.status_cache = await self.client.groups(identifiers)
+            else:
+                loaded = await asyncio.gather(
+                    *(self.client.group(identifier) for identifier in identifiers),
+                    return_exceptions=True,
+                )
+                if len(identifiers) == 1 and isinstance(loaded[0], BaseException):
+                    raise loaded[0]
+                self.status_cache = {
+                    identifier:value for identifier,value in zip(identifiers,loaded)
+                    if not isinstance(value, BaseException)
+                }
+            self.status_cached_at = time.monotonic()
+            if remote_group_id not in self.status_cache:
+                raise AttendanceError('扫码分组状态不可用')
+            return self.status_cache[remote_group_id]
+
     async def _monitor_group(self, local_group_id, remote_group_id, account_ids):
         run_status = None
+        failures = 0
         while True:
             try:
                 local = self.service.store.qr_group(local_group_id)
                 if local['revoked']:
                     return
-                remote = await self.client.group(remote_group_id)
+                remote = await self._polled_group(remote_group_id)
+                failures = 0
+                if local.get('last_status') == 'offline':
+                    self.service.store.set_qr_group_status(local_group_id,'waiting')
+                    local = self.service.store.qr_group(local_group_id)
                 if remote['status'] == 'revoked':
                     self.service.store.set_qr_group_status(local_group_id,'revoked')
                     return
@@ -876,7 +1002,7 @@ class RemoteShareGateway:
                 if not run_id:
                     if local['last_status'] != 'waiting':
                         self.service.store.set_qr_group_status(local_group_id,'waiting')
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(GROUP_IDLE_POLL_SECONDS)
                     continue
                 if remote['status'] in {'completed','partial','failed','expired','revoked'} and local.get('last_remote_run_id') == run_id:
                     if local['last_status'] != remote['status']:
@@ -889,7 +1015,7 @@ class RemoteShareGateway:
                     local = self.service.store.qr_group(local_group_id)
                 batch_id = local.get('last_batch_id')
                 if not batch_id:
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(GROUP_ACTIVE_POLL_SECONDS)
                     continue
                 batch = self.service.store.batch(batch_id)
                 if not batch['items']:
@@ -902,7 +1028,7 @@ class RemoteShareGateway:
                                 'status':'failed','message':'未取得有效二维码，请重新扫描',
                             }],'summary':{'course':local['name'],'completed':0,'total':1},
                         })
-                        await asyncio.sleep(0.25)
+                        await asyncio.sleep(GROUP_ACTIVE_POLL_SECONDS)
                         continue
                     try:
                         await self.service.resolve_open_qr_batch(batch_id,capture_text,account_ids)
@@ -917,7 +1043,7 @@ class RemoteShareGateway:
                             'summary':{'course':local['name'],'completed':0,'total':len(failed)},
                         })
                         self.service.store.set_qr_group_status(local_group_id,'failed')
-                        await asyncio.sleep(0.25)
+                        await asyncio.sleep(GROUP_ACTIVE_POLL_SECONDS)
                         continue
                     batch = self.service.store.batch(batch_id)
                 payload = self._group_items(batch,account_ids)
@@ -927,7 +1053,7 @@ class RemoteShareGateway:
                         'summary':{'course':local['name'],'completed':batch['completed'],'total':payload['summary']['total']},
                     })
                     self.service.store.set_qr_group_status(local_group_id,'failed')
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(GROUP_ACTIVE_POLL_SECONDS)
                     continue
                 if batch['status'] in {'completed','needs_review','finished'}:
                     await self.client.group_status(remote_group_id,run_id,{
@@ -935,22 +1061,40 @@ class RemoteShareGateway:
                         'summary':{'course':local['name'],'completed':batch['completed'],'total':payload['summary']['total']},
                     })
                     self.service.store.set_qr_group_status(local_group_id,payload['status'])
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(GROUP_IDLE_POLL_SECONDS)
                     continue
                 if batch['items']:
                     if run_status != f'{run_id}:running':
                         self.service.store.set_qr_group_run(local_group_id,run_id,batch_id,'running')
                         run_status = f'{run_id}:running'
-                    self.service.start(batch_id,SignInput(qr=remote.get('capture_text') or ''),source='long_link')
-                await asyncio.sleep(0.35)
+                    self.service.start(
+                        batch_id,
+                        SignInput(qr=remote.get('capture_text') or ''),
+                        source='long_link',
+                        rush=True,
+                    )
+                await asyncio.sleep(GROUP_ACTIVE_POLL_SECONDS)
             except asyncio.CancelledError:
                 raise
             except Exception:
+                failures += 1
+                delay = relay_monitor_delay(remote_group_id, failures)
+                if failures >= 2:
+                    try:
+                        self.service.store.set_qr_group_status(local_group_id,'offline')
+                    except Exception:
+                        logger.warning('Attendance long link offline state could not be saved',exc_info=True,extra={
+                            'diagnostic_code':'attendance.long_link_status_error',
+                            'diagnostic_data':{'group_id':local_group_id,'remote_group_id':remote_group_id},
+                        })
                 logger.warning('Attendance long link monitor failed',exc_info=True,extra={
                     'diagnostic_code':'attendance.long_link_error',
-                    'diagnostic_data':{'group_id':local_group_id,'remote_group_id':remote_group_id},
+                    'diagnostic_data':{
+                        'group_id':local_group_id,'remote_group_id':remote_group_id,
+                        'failures':failures,'retry_in_seconds':delay,
+                    },
                 })
-                await asyncio.sleep(1)
+                await asyncio.sleep(delay)
 
     def origin(self, configured=''):
         value = (configured or self.base_url).rstrip('/')
@@ -1006,7 +1150,12 @@ class RemoteShareGateway:
                     try:
                         if mode == 'open':
                             await self.service.resolve_open_qr_batch(batch_id, session['capture_text'], account_ids or [])
-                        self.service.start(batch_id, SignInput(qr=session['capture_text']), source='remote_share')
+                        self.service.start(
+                            batch_id,
+                            SignInput(qr=session['capture_text']),
+                            source='remote_share',
+                            rush=True,
+                        )
                     except AttendanceError as error:
                         failed_items = [{
                             'name':(self.service.database_provider().get_account(account_id)['name'] or '同')[:1]+'*',

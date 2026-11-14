@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
-import { Check, CircleAlert, Globe2, LoaderCircle, Save, Server } from '@lucide/vue';
+import { Check, CircleAlert, LoaderCircle, Save, Server } from '@lucide/vue';
 import { api } from '../../../app/api.js';
 
 const baseUrl = ref('');
@@ -49,31 +49,105 @@ onMounted(load);
 </script>
 
 <template>
-  <section class="preference-section">
-    <div class="preference-section-heading"><h3><Globe2 :size="15" />签到域名</h3><span class="count">{{ status.configured ? '已连接' : '未配置' }}</span></div>
-    <div v-if="loading" class="preferences-loading"><LoaderCircle :size="17" class="spinning" />正在读取域名配置</div>
-    <template v-else>
-      <label class="preference-row"><span><strong>中继服务地址</strong><small>填写自建扫码服务的 HTTPS 域名，例如 https://sign.example.com</small></span><input v-model="baseUrl" type="url" placeholder="https://sign.example.com" autocomplete="url"></label>
-      <label class="preference-row"><span><strong>管理密钥</strong><small>{{ status.admin_secret_configured ? '已保存，留空保持不变' : '首次配置必须填写服务端管理密钥' }}</small></span><input v-model="secret" type="password" placeholder="至少 24 位" autocomplete="new-password"></label>
-      <p v-if="error" class="preferences-feedback error"><CircleAlert :size="14" />{{ error }}</p>
-      <p v-if="message" class="preferences-feedback"><Check :size="14" />{{ message }}</p>
-      <div class="inline-form">
-        <span></span>
-        <div class="attendance-domain-actions">
-          <button class="button light" type="button" :disabled="Boolean(busy) || !baseUrl.trim()" @click="test"><LoaderCircle v-if="busy === 'test'" :size="14" class="spinning" /><Server v-else :size="14" />测试连接</button>
-          <button class="button dark" type="button" :disabled="Boolean(busy) || !dirty" @click="save"><LoaderCircle v-if="busy === 'save'" :size="14" class="spinning" /><Save v-else :size="14" />保存配置</button>
+  <div class="attendance-domain-settings settings-section-stack">
+    <section class="settings-card">
+      <header class="settings-card-heading">
+        <div class="settings-card-title">
+          <h3>中继服务</h3>
         </div>
+        <div class="settings-card-heading-actions">
+          <span class="settings-state" :class="{ ready: status.configured }">{{ status.configured ? '已配置' : '未配置' }}</span>
+        </div>
+      </header>
+      <div class="settings-card-body padded">
+        <div v-if="loading" class="settings-loading">
+          <LoaderCircle :size="18" class="spinning" />正在读取域名配置
+        </div>
+        <template v-else>
+          <div class="attendance-form-grid">
+            <label class="settings-field attendance-address-field">
+              <span>中继服务地址</span>
+              <input v-model="baseUrl" type="url" placeholder="https://sign.example.com" autocomplete="url" aria-label="中继服务地址">
+            </label>
+            <label class="settings-field">
+              <span>管理密钥</span>
+              <input v-model="secret" type="password" :placeholder="status.admin_secret_configured ? '已保存，留空保持不变' : '至少 24 位'" autocomplete="new-password" aria-label="管理密钥">
+            </label>
+          </div>
+          <p v-if="error" class="attendance-feedback error" role="alert"><CircleAlert :size="14" />{{ error }}</p>
+          <p v-if="message" class="attendance-feedback" role="status"><Check :size="14" />{{ message }}</p>
+          <footer class="attendance-card-actions">
+            <span>{{ status.admin_secret_configured ? '管理密钥已保存' : '首次使用需要填写服务端管理密钥' }}</span>
+            <div>
+              <button class="button light" type="button" :disabled="Boolean(busy) || !baseUrl.trim()" @click="test">
+                <LoaderCircle v-if="busy === 'test'" :size="14" class="spinning" />
+                <Server v-else :size="14" />测试连接
+              </button>
+              <button class="button dark" type="button" :disabled="Boolean(busy) || !dirty" @click="save">
+                <LoaderCircle v-if="busy === 'save'" :size="14" class="spinning" />
+                <Save v-else :size="14" />保存配置
+              </button>
+            </div>
+          </footer>
+        </template>
       </div>
-    </template>
-  </section>
+    </section>
 
-  <section class="preference-section">
-    <div class="preference-section-heading"><h3>域名接入</h3><span class="count">{{ status.multi_domain_ready ? '共享中继' : '自建中继' }}</span></div>
-    <template v-if="status.multi_domain_ready">
-      <p class="preference-consequence">共享中继需要 DNS 验证和服务器自动签发证书。添加下面的记录后，再把域名填入上方。</p>
-      <div class="preference-row path-preference"><span><strong>CNAME</strong><code>{{ status.cname_name }} → {{ status.cname_target }}</code></span></div>
-      <div class="preference-row path-preference"><span><strong>TXT</strong><code>{{ status.txt_name }} = {{ status.txt_value }}</code></span></div>
-    </template>
-    <p v-else class="preference-consequence">当前使用自建中继模式：把自己的域名解析到中继服务器，配置 HTTPS 反向代理，然后填写服务地址和管理密钥。共享服务器的 CNAME/TXT 自动接入需要服务端部署多租户证书与 DNS 验证控制面，未配置时不会伪造验证结果。</p>
-  </section>
+  </div>
 </template>
+
+<style scoped>
+.attendance-domain-settings {
+  width: 100%;
+}
+
+.attendance-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(240px, .65fr);
+  gap: 20px;
+}
+
+.attendance-feedback {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  color: var(--green);
+  font-size: 12px;
+}
+
+.attendance-feedback.error {
+  color: var(--red);
+}
+
+.attendance-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.attendance-card-actions > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.attendance-card-actions > div {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 760px) {
+  .attendance-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .attendance-card-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+</style>

@@ -10,11 +10,12 @@ from pathlib import Path
 
 from ...db import utc_now
 from ..platforms.catalog import platform_spec, platform_url
-from ..tasks.runner import JobControl, JobStopped, _account_lock, _acquire_account_lock
+from ..tasks.runner import JobControl, JobStopped, _account_lock, _acquire_account_lock, _build_agent_llm
 from ..notifications.delivery import notification_preferences, send_completion_notification
 from ..notifications.weixin import record_delivery
 from ..runtime.preview import preview_manager
 from .browser import create_learning_browser
+from .quiz import quiz_signature, solve_learning_quiz
 from ...preferences import load_preferences
 from .store import ACTIVE, LearningStore
 from ...diagnostics.logging import current_trace as diagnostic_context
@@ -22,14 +23,28 @@ from ...diagnostics.probe import capture_page as capture_diagnostic_page
 
 
 class LearningService:
-    def __init__(self, database, settings, hub, browser_factory=create_learning_browser, settings_provider=None):
+    def __init__(self, database, settings, hub, browser_factory=create_learning_browser, settings_provider=None, llm_factory=None):
         self._database = database if callable(database) else lambda: database
         self.settings, self.hub, self.browser_factory = settings, hub, browser_factory
         self.settings_provider = settings_provider or (lambda: settings)
+        self.llm_factory = llm_factory
         self.tasks, self.controls, self.browsers, self.operations = {}, {}, {}, {}
         self.browser_tickets = {}
         self.auto_retry_limit = 3
         self.shutting_down = False
+
+    def _quiz_llm(self):
+        settings = self.settings_provider()
+        if self.llm_factory:
+            return self.llm_factory(settings)
+        if not settings.openai_api_key:
+            raise RuntimeError("章节题目需要先在设置中配置可用模型")
+        return _build_agent_llm(
+            settings,
+            settings.openai_model,
+            temperature=.1,
+            max_retries=1,
+        )
 
     def browser_ticket(self, identifier):
         if identifier not in self.browsers: raise RuntimeError("当前任务浏览器已关闭或尚未就绪")
@@ -49,10 +64,16 @@ class LearningService:
     def initialize(self):
         self.shutting_down = False
         self.store.initialize()
-        self.store.recover()
+        self.store.recover(self.auto_retry_limit)
+        self.store.normalize_exhausted_retries(self.auto_retry_limit)
+        resumed_courses = set()
         for run in self.store.retryable_interrupted(self.auto_retry_limit):
-            if self._retryable_interruption(run.get("error", "")):
-                self._resume_interrupted(run["id"])
+            course_id = run.get("course_id")
+            if course_id in resumed_courses or not self._retryable_interruption(run.get("error", "")):
+                self.store.update(run["id"], phase="interrupted")
+                continue
+            self._resume_interrupted(run["id"])
+            resumed_courses.add(course_id)
 
     def payload(self, run):
         identifier, status = run["id"], run["status"]
@@ -125,6 +146,11 @@ class LearningService:
             self.store.reopen_for_retry(identifier, reason="服务重启后自动恢复", limit=self.auto_retry_limit)
         except (KeyError, RuntimeError):
             return
+        except Exception:
+            logger.exception("Learning run could not be auto-resumed", extra={
+                "diagnostic_code":"learning.auto_resume_error","diagnostic_data":{"run_id":identifier},
+            })
+            return
         self._launch_run(identifier, "服务重启后自动恢复")
 
     @staticmethod
@@ -147,7 +173,8 @@ class LearningService:
                 })
             while True:
                 control = self.controls.get(identifier)
-                await self.run(identifier)
+                run_task = asyncio.create_task(self.run(identifier))
+                await run_task
                 run = self.store.run(identifier)
                 if self.shutting_down or run["status"] != "interrupted":
                     break
@@ -157,7 +184,7 @@ class LearningService:
                 retry_count = int(run.get("auto_retry_count") or 0)
                 if retry_count >= self.auto_retry_limit:
                     detail = str(run.get("error") or "网课执行中断")
-                    message = f"{detail}；已自动重试 {self.auto_retry_limit} 次，仍未恢复。"
+                    message = f"{detail}；已自动重试 {self.auto_retry_limit} 次，仍未恢复，请手动重试。"
                     self.store.update(identifier, error=message)
                     await self.emit(identifier, "retry_exhausted", message, {
                         "attempt": retry_count, "limit": self.auto_retry_limit,
@@ -299,6 +326,7 @@ class LearningService:
             await self.emit(identifier, "browser_ready", "后台浏览器已就绪，可在软件内实时操控" if run["headless"] else "网课独立窗口已就绪", {"headless": bool(run["headless"]), "browser_task_id": identifier})
             await control.run(lambda: browser.navigate(run["url"]))
             scope, completed = set(), set()
+            submitted_work_quizzes = set()
             resume_chapter_id = None
             while True:
                 chapters = await self.verify_catalog(identifier, browser, control)
@@ -327,7 +355,14 @@ class LearningService:
                             await control.run(lambda: browser.open_chapter(chapter["chapterId"]))
                         resume_chapter_id = None
                         last_chapter_id = chapter["chapterId"]
-                        pending = await self.learn_chapter(identifier, chapter, browser, control)
+                        pending = await self.learn_chapter(
+                            identifier,
+                            chapter,
+                            browser,
+                            control,
+                            diagnostics,
+                            submitted_work_quizzes,
+                        )
                     except (JobStopped, asyncio.CancelledError): raise
                     except Exception as error:
                         if hasattr(browser, "ensure_connected"): browser.ensure_connected()
@@ -426,11 +461,13 @@ class LearningService:
             diagnostics.summary(self.store.run(identifier))
             diagnostic_context.reset(log_context)
 
-    async def learn_chapter(self, identifier, chapter, browser, control):
+    async def learn_chapter(self, identifier, chapter, browser, control, diagnostics=None, submitted_work_quizzes=None):
+        submitted_work_quizzes = submitted_work_quizzes if submitted_work_quizzes is not None else set()
         played, ended = set(), {}
         attempts, play_errors, healthy_since = {}, {}, {}
         positions, progress_at, read_done, read_started = {}, {}, {}, {}
-        deferred, announced = {}, set()
+        deferred, announced, quiz_waiting = {}, set(), {}
+        quiz_llm = None
         verify_at, missing_since = 0, None
         revision = control.learning_revision
         options = getattr(browser, "learning_options", {})
@@ -457,6 +494,7 @@ class LearningService:
             if revision != control.learning_revision:
                 played.clear(); ended.clear(); attempts.clear(); play_errors.clear(); healthy_since.clear()
                 positions.clear(); progress_at.clear(); read_done.clear(); read_started.clear(); deferred.clear()
+                quiz_waiting.clear()
                 revision = control.learning_revision
                 verify_at, missing_since = 0, None
             if now >= verify_at:
@@ -484,7 +522,7 @@ class LearningService:
             if candidate is None:
                 missing_since = now if missing_since is None else missing_since
                 exhausted = bool(pending) and all(key in deferred for key in pending)
-                wait = confirmation_wait if read_done or ended else resource_wait
+                wait = confirmation_wait if read_done or ended or quiz_waiting else resource_wait
                 if not exhausted and now - missing_since < wait:
                     await control.run(lambda: asyncio.sleep(1)); continue
                 for key, unit in pending.items():
@@ -505,7 +543,81 @@ class LearningService:
             if data.get("error"):
                 await defer(key, unit["title"], data["error"], resource_kind); continue
             if data.get("quiz"):
-                await defer(key, unit["title"], "章节或视频练习需要处理", "quiz"); continue
+                if getattr(browser, "account", {}).get("platform") != "chaoxing":
+                    await defer(key, unit["title"], "当前平台章节题目暂需人工处理", "quiz")
+                    continue
+                work_quiz = key.startswith("work-")
+                waiting_state = quiz_waiting.get(key)
+                if waiting_state is not None:
+                    if now - waiting_state["since"] <= confirmation_wait:
+                        if work_quiz:
+                            await control.run(lambda: asyncio.sleep(1))
+                            continue
+                        try:
+                            refreshed = await control.run(lambda: browser.extract_quiz_questions(candidate["frame"]))
+                        except Exception:
+                            refreshed = {}
+                        if not refreshed.get("unit_count") or quiz_signature(refreshed) == waiting_state.get("signature"):
+                            await control.run(lambda: asyncio.sleep(1))
+                            continue
+                        quiz_waiting.pop(key, None)
+                    else:
+                        quiz_waiting.pop(key, None)
+                        await defer(key, unit["title"], "章节题目已提交，但平台尚未确认完成", "quiz")
+                        continue
+                if work_quiz and key in submitted_work_quizzes:
+                    await defer(key, unit["title"], "章节测验已提交，等待平台确认完成", "quiz")
+                    continue
+                if quiz_llm is None:
+                    quiz_llm = self._quiz_llm()
+
+                async def quiz_emit(event_kind, message, data=None):
+                    return await self.emit(identifier, event_kind, message, data)
+
+                result = await solve_learning_quiz(
+                    browser=browser,
+                    frame=candidate["frame"],
+                    unit=unit,
+                    llm=quiz_llm,
+                    control=control,
+                    emit=quiz_emit,
+                    auto_submit=bool(options.get("auto_submit_quiz", True)),
+                    diagnostics=diagnostics,
+                )
+                status = result.get("status")
+                if status == "filled_pending_review":
+                    if work_quiz:
+                        submitted_work_quizzes.add(key)
+                    await self.wait_for_user(
+                        identifier,
+                        browser,
+                        control,
+                        f"章节题目已填写并核验：{unit['title']}。请在实时浏览器核对并提交，完成后继续。",
+                        pause_media=False,
+                    )
+                    quiz_waiting[key] = {
+                        "since": asyncio.get_running_loop().time(),
+                        "signature": result.get("signature") or [],
+                    }
+                    verify_at, missing_since = 0, None
+                    continue
+                if status == "submitted":
+                    if work_quiz:
+                        submitted_work_quizzes.add(key)
+                    quiz_waiting[key] = {
+                        "since": asyncio.get_running_loop().time(),
+                        "signature": result.get("signature") or [],
+                    }
+                    verify_at, missing_since = 0, None
+                    await control.run(lambda: asyncio.sleep(1))
+                    continue
+                await defer(
+                    key,
+                    unit["title"],
+                    result.get("reason") or "章节题目暂不支持自动作答",
+                    "quiz",
+                )
+                continue
             self.store.update(identifier, phase="learning", current_unit=unit["title"])
             if resource_kind != "media":
                 self.store.update(identifier, position=0, duration=0)

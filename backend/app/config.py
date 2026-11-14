@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import dataclass
+import shutil
+import sqlite3
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from .product import DATABASE_FILENAME, LEGACY_DATA_DIRECTORY
+from .product import DATA_DIRECTORY, DATABASE_FILENAME, LEGACY_DATA_DIRECTORY
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+logger = logging.getLogger("mumu.config")
 
 
 def load_env_file(path: Path) -> None:
@@ -34,15 +39,150 @@ def default_data_root() -> Path:
     )
     if explicit:
         return Path(explicit).expanduser().resolve()
+    return (Path.home() / DATA_DIRECTORY).resolve()
+
+
+def legacy_data_root() -> Path | None:
     local_app_data = os.getenv("LOCALAPPDATA", "").strip()
-    if local_app_data:
-        return Path(local_app_data) / LEGACY_DATA_DIRECTORY
-    return PROJECT_ROOT / "app-data"
+    if not local_app_data:
+        return None
+    return (Path(local_app_data) / LEGACY_DATA_DIRECTORY).resolve()
+
+
+def _tree_stats(root: Path) -> tuple[int, int]:
+    count = 0
+    size = 0
+    for path in root.rglob("*"):
+        count += 1
+        if path.is_file() and not path.is_symlink():
+            size += path.stat().st_size
+    return count, size
+
+
+def _long_path(path: Path) -> Path:
+    resolved = path.resolve()
+    if os.name != "nt":
+        return resolved
+    value = str(resolved)
+    if value.startswith("\\\\?\\"):
+        return Path(value)
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
+
+
+def _rebind_database_paths(database: Path, source: Path, target: Path) -> int:
+    if not database.is_file():
+        return 0
+    replacements = []
+    for old, new in (
+        (str(source), str(target)),
+        (str(source).replace("\\", "\\\\"), str(target).replace("\\", "\\\\")),
+        (str(source).replace("\\", "/"), str(target).replace("\\", "/")),
+    ):
+        if (old, new) not in replacements:
+            replacements.append((old, new))
+    updated = 0
+    connection = sqlite3.connect(str(_long_path(database)))
+    try:
+        with connection:
+            tables = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+            ]
+            for table in tables:
+                quoted_table = '"' + table.replace('"', '""') + '"'
+                columns = connection.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+                for column in columns:
+                    name = str(column[1])
+                    declared_type = str(column[2] or "").upper()
+                    if any(token in declared_type for token in ("INT", "REAL", "FLOA", "DOUB", "NUM", "DEC", "BOOL")):
+                        continue
+                    quoted_column = '"' + name.replace('"', '""') + '"'
+                    expression = quoted_column
+                    conditions = []
+                    expression_parameters = []
+                    condition_parameters = []
+                    for old, new in replacements:
+                        expression = f"REPLACE({expression}, ?, ?)"
+                        conditions.append(f"INSTR({quoted_column}, ?) > 0")
+                        expression_parameters.extend((old, new))
+                        condition_parameters.append(old)
+                    statement = (
+                        f"UPDATE {quoted_table} SET {quoted_column} = {expression} "
+                        f"WHERE {' OR '.join(conditions)}"
+                    )
+                    result = connection.execute(
+                        statement,
+                        expression_parameters + condition_parameters,
+                    )
+                    updated += max(0, result.rowcount)
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        connection.close()
+    return updated
+
+
+def migrate_legacy_data_root(target: Path, *, source: Path | None = None) -> Path:
+    """Copy legacy user data into the new home directory without overwriting it."""
+    if (
+        os.getenv("MUMU_DATA", "").strip()
+        or os.getenv("ANSWER_STUDIO_DATA", "").strip()
+    ):
+        return target
+    source = (source or legacy_data_root())
+    if source is None:
+        return target
+    source = source.resolve()
+    target = target.expanduser().resolve()
+    if source == target or not source.is_dir():
+        return target
+    if target.exists() and any(target.iterdir()):
+        updated = _rebind_database_paths(target / DATABASE_FILENAME, source, target)
+        if updated:
+            logger.info(
+                "Legacy data paths rebound",
+                extra={
+                    "diagnostic_code": "mumu.data_root.paths_rebound",
+                    "diagnostic_data": {"rows": updated, "target": str(target)},
+                },
+            )
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.parent / f"{target.name}.migrating-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.copytree(_long_path(source), _long_path(staging), symlinks=True)
+        if _tree_stats(_long_path(source)) != _tree_stats(_long_path(staging)):
+            raise OSError("迁移后的文件数量或大小与旧目录不一致")
+        updated = _rebind_database_paths(staging / DATABASE_FILENAME, source, target)
+        if target.exists():
+            target.rmdir()
+        staging.replace(target)
+        logger.info(
+            "Legacy data root migrated",
+            extra={
+                "diagnostic_code": "mumu.data_root.migrated",
+                "diagnostic_data": {
+                    "source": str(source),
+                    "target": str(target),
+                    "rows_rebound": updated,
+                },
+            },
+        )
+        return target
+    except Exception as error:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError(
+            f"无法把旧数据目录迁移到 {target}。旧数据仍保留在 {source}，请检查磁盘空间或权限后重试"
+        ) from error
 
 
 @dataclass(frozen=True)
 class Settings:
-    data_root: Path = default_data_root()
+    data_root: Path = field(default_factory=default_data_root)
     host: str = os.getenv("MUMU_HOST") or os.getenv("ANSWER_STUDIO_HOST", "127.0.0.1")
     port: int = int(os.getenv("MUMU_PORT") or os.getenv("ANSWER_STUDIO_PORT", "8877"))
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")

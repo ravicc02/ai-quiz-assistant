@@ -25,6 +25,7 @@ class AssignmentPreferences(PreferenceModel):
 
 class LearningPreferences(PreferenceModel):
     headless: bool = True
+    auto_submit_quiz: bool = True
     playback_rate: float = Field(default=1, ge=0.5, le=2)
     volume: int = Field(default=0, ge=0, le=100)
     resource_wait_seconds: int = Field(default=15, ge=5, le=120)

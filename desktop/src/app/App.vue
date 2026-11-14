@@ -2,8 +2,10 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import QRCode from "qrcode";
 import StartupExperience from "../features/brand/components/StartupExperience.vue";
+import LaunchExperience from "../features/brand/components/LaunchExperience.vue";
 import { onboardingComplete, completeOnboarding, onboardingPreviouslyCompleted } from "./lib/onboarding.js";
 import { waitForBackendHealth } from "./lib/backend-connection.js";
+import { LAUNCH_MINIMUM_MS, launchMessageForState, launchProgressForState, launchRequiresSetup } from "./lib/launch.js";
 import {
   Check, CheckCheck, Circle, CircleAlert, ClipboardList, ClipboardCheck,
   Ellipsis, ExternalLink, FileText, Layers3,
@@ -167,7 +169,13 @@ const weixinSessionBusy = ref(false);
 const verificationBusy = ref(false);
 const setupOpen = ref(!onboardingPreviouslyCompleted());
 const setupDismissible = ref(false);
-function reopenSetup() { settingsOpen.value = false; setupDismissible.value = true; setupOpen.value = true; }
+const launchComplete = ref(false);
+const launchState = ref(null);
+const launchProgress = ref(8);
+const launchDetail = ref("正在检查浏览器、自动化组件与运行库");
+const launchError = ref("");
+const launchHeading = computed(() => launchMessageForState(launchState.value));
+let launchProgressTimer = null;
 const setupScope = computed(() => settingsInfo.value?.data_root || health.value?.data_root || "");
 let initializationChecked = false;
 async function initializeFirstRun() {
@@ -202,8 +210,17 @@ async function initializeFirstRun() {
   }
   setupOpen.value = true;
 }
-async function setupRuntimeReady() { await connectBackend(); if (!setupDismissible.value) await initializeFirstRun(); }
-async function finishSetup() { initializationChecked = true; setupOpen.value = false; await connectBackend(); }
+async function setupRuntimeReady() {
+  await connectBackend();
+  if (!setupDismissible.value) await initializeFirstRun();
+  startConnectionMonitor();
+}
+async function finishSetup() {
+  initializationChecked = true;
+  setupOpen.value = false;
+  await connectBackend();
+  startConnectionMonitor();
+}
 let socket = null;
 let socketReconnectTimer = null;
 let socketGeneration = 0;
@@ -885,6 +902,86 @@ function connectBackend() {
   return connecting;
 }
 
+const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+function syncLaunchState(next) {
+  launchState.value = next;
+  launchProgress.value = Math.max(launchProgress.value, launchProgressForState(next));
+  if (next?.status === "starting") launchDetail.value = "正在启动本地服务";
+  else if (next?.backendReady || next?.status === "ready") launchDetail.value = "浏览器与运行库已就绪，正在载入工作区";
+  else if (next?.status === "installing") launchDetail.value = "正在加载自动化组件与运行库";
+  else launchDetail.value = "正在检查浏览器、自动化组件与运行库";
+}
+
+function startConnectionMonitor() {
+  if (connectionTimer) clearInterval(connectionTimer);
+  connectionTimer = setInterval(async () => {
+    availabilityNow.value = Date.now();
+    const wasOffline = !health.value;
+    await loadHealth({ silent: true });
+    if (wasOffline && health.value) {
+      await connectBackend();
+    } else if (health.value) {
+      try {
+        await Promise.all([loadJobs(), loadAccounts()]);
+        if (activePage.value === "assignments" && selectedAccountId.value) {
+          await loadCollectionRuns();
+        }
+      } catch {
+        // The next health check will surface a recovered or lost backend.
+      }
+    }
+  }, 5000);
+}
+
+async function runLaunchSequence() {
+  const startedAt = Date.now();
+  launchError.value = "";
+  launchProgress.value = 8;
+  launchDetail.value = "正在检查浏览器、自动化组件与运行库";
+  launchState.value = null;
+  clearInterval(launchProgressTimer);
+  launchProgressTimer = setInterval(() => {
+    if (!launchError.value && launchProgress.value < 78) {
+      launchProgress.value = Math.min(78, launchProgress.value + 1);
+    }
+  }, 420);
+  try {
+    if (desktopAvailable) {
+      const state = await window.desktopApi.checkDependencies();
+      syncLaunchState(state);
+      if (launchRequiresSetup(state)) {
+        launchProgress.value = 100;
+        launchDetail.value = "需要完成浏览器与运行库配置";
+        await wait(Math.max(0, LAUNCH_MINIMUM_MS - (Date.now() - startedAt)));
+        setupOpen.value = true;
+        launchComplete.value = true;
+        return;
+      }
+      if (state?.status === "error") throw new Error(state.error || "运行环境准备失败");
+    } else {
+      launchProgress.value = Math.max(launchProgress.value, 42);
+      launchDetail.value = "正在启动本地服务";
+    }
+    const readyHealth = await connectBackend();
+    if (!readyHealth) throw new Error(error.value || "本地服务启动超时");
+    launchProgress.value = Math.max(launchProgress.value, 88);
+    launchDetail.value = "正在载入工作区";
+    await initializeFirstRun();
+    launchProgress.value = 100;
+    launchDetail.value = "工作区已就绪";
+    await wait(Math.max(0, LAUNCH_MINIMUM_MS - (Date.now() - startedAt)));
+    launchComplete.value = true;
+    startConnectionMonitor();
+  } catch (failure) {
+    launchError.value = conciseMessage(failure?.message || failure);
+    launchProgress.value = Math.max(launchProgress.value, 100);
+  } finally {
+    clearInterval(launchProgressTimer);
+    launchProgressTimer = null;
+  }
+}
+
 async function confirmPlatformAuthorization(account) {
   try { await api.confirmAuthorization(account.id); notice.value = "正在保存浏览器授权"; }
   catch (failure) { setError(failure); }
@@ -1422,8 +1519,8 @@ async function switchAccount(accountId) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const avatar = document.querySelector('.account-item.active .account-avatar');
   const identity = document.querySelector('.board-account-name');
-  avatar?.animate([{ transform: 'scale(.8) rotate(-7deg)' }, { transform: 'scale(1.12) rotate(3deg)', offset: .6 }, { transform: 'none' }], { duration: 420, easing: 'cubic-bezier(.22,1,.36,1)' });
-  identity?.animate([{ opacity: 0, transform: 'translateX(-16px)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: 'cubic-bezier(.16,1,.3,1)' });
+  avatar?.animate([{ opacity: .72 }, { opacity: 1 }], { duration: 160, easing: 'cubic-bezier(.22,1,.36,1)' });
+  identity?.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 180, easing: 'cubic-bezier(.22,1,.36,1)' });
 }
 
 async function openSelectedJobAssignment() {
@@ -1938,25 +2035,7 @@ onMounted(async () => {
   document.addEventListener("click", closeAccountMenuOnOutsideClick);
   document.addEventListener("keydown", closeAccountMenuOnEscape);
   setupOpen.value = !onboardingPreviouslyCompleted();
-  await connectBackend();
-  await initializeFirstRun();
-  connectionTimer = setInterval(async () => {
-    availabilityNow.value = Date.now();
-    const wasOffline = !health.value;
-    await loadHealth({ silent: true });
-    if (wasOffline && health.value) {
-      await connectBackend();
-    } else if (health.value) {
-      try {
-        await Promise.all([loadJobs(), loadAccounts()]);
-        if (activePage.value === "assignments" && selectedAccountId.value) {
-          await loadCollectionRuns();
-        }
-      } catch {
-        // The next health check will surface a recovered or lost backend.
-      }
-    }
-  }, 5000);
+  await runLaunchSequence();
 });
 
 onUnmounted(() => {
@@ -1969,6 +2048,7 @@ onUnmounted(() => {
   if (profilePreviewTimer) clearInterval(profilePreviewTimer);
   if (agentSnapshotTimer) clearInterval(agentSnapshotTimer);
   collectionController.dispose();
+  if (launchProgressTimer) clearInterval(launchProgressTimer);
   if (connectionTimer) clearInterval(connectionTimer);
   if (noticeTimer) clearTimeout(noticeTimer);
   browserExpansionAnimation?.cancel();
@@ -1976,7 +2056,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-shell" :inert="setupOpen || undefined">
+  <LaunchExperience
+    v-if="!launchComplete"
+    :progress="launchProgress"
+    :message="launchHeading"
+    :detail="launchDetail"
+    :error="launchError"
+    @retry="runLaunchSequence"
+  />
+  <div v-show="launchComplete" class="app-shell" :inert="setupOpen || !launchComplete || undefined">
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark"><img src="/brand/mumu.png" width="35" height="35" alt="" /></span>
@@ -1995,7 +2083,7 @@ onUnmounted(() => {
 
     <div class="app-body">
       <nav class="side-nav" aria-label="主导航">
-        <span class="nav-motion-track" :style="{ transform: `translateY(${navItems.findIndex(item => item.id === activePage) * 70}px)` }" aria-hidden="true"></span>
+        <span class="nav-motion-track" :style="{ transform: `translateY(${navItems.findIndex(item => item.id === activePage) * 68}px)` }" aria-hidden="true"></span>
         <button
           v-for="item in navItems"
           :key="item.id"
@@ -2050,7 +2138,7 @@ onUnmounted(() => {
       <main v-if="activePage === 'dashboard'" key="dashboard" class="dashboard-layout">
 <section class="dashboard-main town-dashboard">
           <div class="page-heading dashboard-heading">
-            <div><h2>任务公司 <span class="heading-count">{{ recentAssignmentJobs.length }}</span></h2></div>
+            <div><h2>总控中心 <span class="heading-count">{{ recentAssignmentJobs.length }}</span></h2></div>
             <button class="button dark" type="button" @click="goToAssignments()"><Plus :size="15" />执行作业</button>
           </div>
 
@@ -2471,7 +2559,7 @@ onUnmounted(() => {
 
       <main v-else-if="activePage === 'connectors'" key="connectors" class="settings-page">
         <div class="page-heading">
-          <h2>连接器</h2>
+          <h2>连接器 <span class="count">{{ connectors.filter(item => item.available).length }}</span></h2>
         </div>
         <div class="connector-grid">
           <button
@@ -2484,17 +2572,21 @@ onUnmounted(() => {
             @click="openConnector(connector)"
           >
             <PlatformLogo :platform="connector.id" :size="44" />
-            <span>
+            <span class="connector-copy">
               <strong>{{ connector.name }}</strong>
+              <small>{{ connector.id === 'weixin' ? '接收新作业提醒与任务结果' : '连接到外部服务' }}</small>
             </span>
-            <span
-              v-if="connector.id === 'weixin'"
-              class="status-tag"
-              :class="{ enabled: settingsInfo?.weixin_configured }"
-            >
-              {{ settingsInfo?.weixin_ready ? "会话就绪" : settingsInfo?.weixin_configured ? "已绑定" : "配置" }}
+            <span class="connector-state">
+              <span
+                v-if="connector.id === 'weixin'"
+                class="status-tag"
+                :class="{ enabled: settingsInfo?.weixin_configured }"
+              >
+                {{ settingsInfo?.weixin_ready ? "会话就绪" : settingsInfo?.weixin_configured ? "已绑定" : "配置" }}
+              </span>
+              <span v-else class="status-tag">未接入</span>
+              <ArrowUpRight :size="16" />
             </span>
-            <span v-else class="status-tag">未接入</span>
           </button>
         </div>
       </main>
@@ -2502,7 +2594,7 @@ onUnmounted(() => {
       </Transition>
     </div>
 
-    <SettingsDialog :open="settingsOpen" v-model:section="settingsSection" :accounts="accounts" :info="settingsInfo" :profile="localProfile" :save-profile="updateLocalProfile" :update="updateState" :auto-check="autoCheckUpdates" :check-updates="checkForUpdates" :set-auto-check="updateAutoCheck" :open-external="openProjectLink" :open-data="openDataDirectory" :open-logs="openLogDirectory" @close="settingsOpen=false" @saved="preferencesSaved" @model-saved="modelSettingsSaved" @setup="reopenSetup" @platforms="settingsOpen=false;activePage='platforms'" />
+    <SettingsDialog :open="settingsOpen" v-model:section="settingsSection" :accounts="accounts" :info="settingsInfo" :profile="localProfile" :save-profile="updateLocalProfile" :update="updateState" :auto-check="autoCheckUpdates" :check-updates="checkForUpdates" :set-auto-check="updateAutoCheck" :open-external="openProjectLink" :open-data="openDataDirectory" :open-logs="openLogDirectory" @close="settingsOpen=false" @saved="preferencesSaved" @model-saved="modelSettingsSaved" @platforms="settingsOpen=false;activePage='platforms'" />
     <LearningTaskDetails :open="learningResultOpen" :run-id="learningResultId" @close="learningResultOpen = false" @workspace="openLearningWorkspace" />
 
     <Transition name="dialog">
@@ -2855,7 +2947,7 @@ onUnmounted(() => {
 
 
     <AccountAuthorization :open="authorizationOpen" :state="authorizationState" :platform-label="platformLabel(authorizationState.platform)" @close="authorizationOpen = false" @retry="authorizationFlow.retry()" />
-    <StartupExperience v-if="setupOpen" :can-close="setupDismissible" @close="setupOpen=false" :scope="setupScope" :accounts="accounts" :model-configured="Boolean(health?.ai_configured)" @ready="setupRuntimeReady" @complete="finishSetup" @model-saved="modelSettingsSaved" @authorized="accounts = $event" />
+    <StartupExperience v-if="launchComplete && setupOpen" :can-close="setupDismissible" @close="setupOpen=false" :scope="setupScope" :accounts="accounts" :model-configured="Boolean(health?.ai_configured)" @ready="setupRuntimeReady" @complete="finishSetup" @model-saved="modelSettingsSaved" @authorized="accounts = $event" />
 
     <Transition name="dialog">
       <div v-if="deleteTaskTarget" class="modal-backdrop" @mousedown.self="!deleteTaskBusy && (deleteTaskTarget = null)">

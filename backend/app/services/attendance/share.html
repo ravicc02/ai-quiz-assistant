@@ -65,7 +65,7 @@ const endpoint = path => base + (remote && !path ? '/session' : path);
 const el = id => document.getElementById(id);
 let state = null, busy = false, active = true, stream = null, scanTimer = null;
 
-const labels = {waiting:'等待扫码',captured:'已收到二维码',pending:'待执行',queued:'排队中',running:'核验中',submitting:'提交中',signing:'签到中',succeeded:'已签到',already_signed:'已签到',completed:'已完成',partial:'部分完成',awaiting_input:'待补充',failed:'失败',auth_required:'待授权',expired:'已结束',manual_required:'需本人处理',unknown:'待核对',cancelled:'已取消',revoked:'已撤销'};
+const labels = {waiting:'等待扫码',captured:'已收到二维码',pending:'待执行',queued:'排队中',running:'核验中',submitting:'提交中',signing:'签到中',succeeded:'已签到',already_signed:'已签到',completed:'已完成',partial:'部分完成',awaiting_input:'待补充',failed:'失败',auth_required:'待授权',expired:'已结束',manual_required:'需人工处理',unknown:'待核对',cancelled:'已取消',revoked:'已撤销'};
 function pin() { return el('pin').value.trim(); }
 function headers() { return {Authorization:'Bearer ' + token, 'Content-Type':'application/json', ...(pin() ? {'X-Mumu-Pin':pin()} : {})}; }
 function show(message, kind = '') { el('message').textContent = message; el('message').className = 'status ' + kind; }

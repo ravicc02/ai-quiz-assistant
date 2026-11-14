@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import time
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ...db import utc_now
 from .contracts import AttendanceError
@@ -12,6 +15,41 @@ from .availability import window
 
 SUCCESS = {'succeeded', 'already_signed'}
 ACTIVE = {'queued', 'running', 'submitting'}
+
+
+def normalize_course_filters(course_filters=None, course_filter=None):
+    values = course_filters if course_filters is not None else course_filter
+    if isinstance(values, str):
+        try:
+            decoded = json.loads(values)
+        except (TypeError, ValueError):
+            decoded = values
+        values = decoded if isinstance(decoded, list) else [decoded]
+    if not isinstance(values, (list, tuple, set)):
+        values = [values] if values else []
+    return list(dict.fromkeys(
+        str(value).strip()[:200] for value in values if str(value or '').strip()
+    ))[:20]
+
+
+def normalize_scan_windows(windows=None):
+    result = []
+    for window in windows or []:
+        if hasattr(window, 'model_dump'):
+            window = window.model_dump()
+        if not isinstance(window, dict):
+            raise AttendanceError('检测时段格式无效')
+        days = sorted({int(day) for day in window.get('days') or []})
+        start = str(window.get('start') or '')
+        end = str(window.get('end') or '')
+        if not days or any(day < 1 or day > 7 for day in days):
+            raise AttendanceError('检测时段必须选择 1 至 7 中的星期')
+        if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', start) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', end):
+            raise AttendanceError('检测时段必须使用 HH:MM 格式')
+        if start == end:
+            raise AttendanceError('检测时段的开始和结束时间不能相同')
+        result.append({'days':days,'start':start,'end':end})
+    return result[:20]
 
 
 class AttendanceStore:
@@ -51,20 +89,47 @@ class AttendanceStore:
                   updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS attendance_auto_groups(
                   id TEXT PRIMARY KEY, name TEXT NOT NULL, account_ids_json TEXT NOT NULL,
-                  kinds_json TEXT NOT NULL, interval_seconds INTEGER NOT NULL DEFAULT 60,
+                  kinds_json TEXT NOT NULL, course_filter TEXT NOT NULL DEFAULT '',
+                  windows_json TEXT NOT NULL DEFAULT '[]',
+                  interval_seconds INTEGER NOT NULL DEFAULT 30,
                   enabled INTEGER NOT NULL DEFAULT 1, location_json TEXT,
                   last_scan_at REAL, last_error TEXT NOT NULL DEFAULT '', last_batch_id TEXT,
                   created_at REAL NOT NULL, updated_at REAL NOT NULL,
                   FOREIGN KEY(last_batch_id) REFERENCES attendance_batches(id) ON DELETE SET NULL);
+                CREATE TABLE IF NOT EXISTS attendance_account_throttles(
+                  account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                  failures INTEGER NOT NULL DEFAULT 0, cooldown_until REAL NOT NULL DEFAULT 0,
+                  updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS attendance_request_budget(
+                  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                  hour_key TEXT NOT NULL, scan_count INTEGER NOT NULL DEFAULT 0,
+                  sign_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+                  PRIMARY KEY(account_id,hour_key));
+                CREATE TABLE IF NOT EXISTS attendance_class_scan_state(
+                  class_key TEXT PRIMARY KEY, course_id TEXT NOT NULL, class_id TEXT NOT NULL,
+                  course_name TEXT NOT NULL DEFAULT '', class_name TEXT NOT NULL DEFAULT '',
+                  members_json TEXT NOT NULL DEFAULT '[]', anchor TEXT NOT NULL DEFAULT '',
+                  idle_streak INTEGER NOT NULL DEFAULT 0, failure_streak INTEGER NOT NULL DEFAULT 0,
+                  backoff_seconds INTEGER NOT NULL DEFAULT 0, backoff_until REAL NOT NULL DEFAULT 0,
+                  next_due_at REAL NOT NULL DEFAULT 0, last_scan_at REAL NOT NULL DEFAULT 0,
+                  last_error TEXT NOT NULL DEFAULT '', scan_count INTEGER NOT NULL DEFAULT 0,
+                  anchor_switches INTEGER NOT NULL DEFAULT 0, anchor_scans INTEGER NOT NULL DEFAULT 0, fallback_scans INTEGER NOT NULL DEFAULT 0,
+                  activity_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS attendance_codebook(
                   activity_id TEXT PRIMARY KEY, code TEXT NOT NULL, source TEXT NOT NULL, kind TEXT,
                   created_at REAL NOT NULL, expires_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS attendance_code_attempts(
+                  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                  activity_id TEXT NOT NULL, wrong_count INTEGER NOT NULL DEFAULT 0,
+                  locked_until REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+                  PRIMARY KEY(account_id,activity_id));
                 CREATE TABLE IF NOT EXISTS attendance_auto_settings(
                   account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
                   enabled INTEGER NOT NULL DEFAULT 0, kinds_json TEXT NOT NULL,
-                  course_filter TEXT NOT NULL DEFAULT '', interval_seconds INTEGER NOT NULL DEFAULT 60,
+                  course_filter TEXT NOT NULL DEFAULT '', interval_seconds INTEGER NOT NULL DEFAULT 30,
                   location_json TEXT, last_scan_at REAL, last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS attendance_item_activity_status ON attendance_items(activity_id,status);
+                CREATE INDEX IF NOT EXISTS attendance_class_scan_updated ON attendance_class_scan_state(updated_at);
             ''')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(attendance_activities)')}
             additions = {'end_time':'REAL','availability_status':"TEXT NOT NULL DEFAULT 'unverified'",'verified_at':'TEXT','open_ended':'INTEGER NOT NULL DEFAULT 0'}
@@ -73,8 +138,23 @@ class AttendanceStore:
                 if name not in columns:
                     db.execute(f'ALTER TABLE attendance_activities ADD COLUMN {name} {definition}')
                     migrated = True
+            class_scan_columns = {
+                row['name'] for row in db.execute('PRAGMA table_info(attendance_class_scan_state)')
+            }
+            if 'anchor_switches' not in class_scan_columns:
+                db.execute(
+                    'ALTER TABLE attendance_class_scan_state '
+                    'ADD COLUMN anchor_switches INTEGER NOT NULL DEFAULT 0'
+                )
+                migrated = True
             if migrated:
                 db.execute("UPDATE attendance_activities SET active=0 WHERE availability_status='unverified'")
+            auto_group_columns = {row['name'] for row in db.execute('PRAGMA table_info(attendance_auto_groups)')}
+            if 'course_filter' not in auto_group_columns:
+                db.execute("ALTER TABLE attendance_auto_groups ADD COLUMN course_filter TEXT NOT NULL DEFAULT ''")
+            if 'windows_json' not in auto_group_columns:
+                db.execute("ALTER TABLE attendance_auto_groups ADD COLUMN windows_json TEXT NOT NULL DEFAULT '[]'")
+            db.execute('DELETE FROM attendance_request_budget WHERE hour_key<>?', (self.budget_hour(),))
             share_columns = {row['name'] for row in db.execute('PRAGMA table_info(attendance_shares)')}
             for name, definition in {
                 'purpose': "TEXT NOT NULL DEFAULT 'qr'",
@@ -90,7 +170,19 @@ class AttendanceStore:
     def recover(self):
         with self.database.connect() as db:
             db.execute("UPDATE attendance_items SET status='unknown',message='应用重启，提交回执未确认，请先核对平台记录' WHERE status='submitting'")
-            db.execute("UPDATE attendance_items SET status='cancelled',message='应用重启，尚未发出的操作已取消' WHERE status IN ('queued','running')")
+            recovered = [
+                row['batch_id']
+                for row in db.execute(
+                    "SELECT DISTINCT batch_id FROM attendance_items WHERE status IN ('queued','running')"
+                ).fetchall()
+            ]
+            db.execute("""UPDATE attendance_items SET status='awaiting_input',message='应用重启，二维码需要重新扫码'
+              WHERE status IN ('queued','running') AND activity_id IN (
+                SELECT id FROM attendance_activities WHERE kind='qr'
+              )""")
+            db.execute("""UPDATE attendance_items SET status='pending',message='应用重启，等待恢复执行'
+              WHERE status IN ('queued','running')""")
+        return recovered
 
     def save_activities(self, account_id, rows, successful_courses, all_courses=None, failed_courses=None):
         with self.database.connect() as db:
@@ -116,9 +208,15 @@ class AttendanceStore:
                     (uuid.uuid4().hex,account_id,row['upstream_id'],row['course_id'],row['class_id'],row['course_name'],row['title'],row['kind'],availability['start_time'],utc_now(),availability['end_time'],'open',row['verified_at'],int(availability['open_ended'])))
         return self.activities([account_id])
 
-    def activities(self, account_ids=None):
+    def activities(self, account_ids=None, *, auto_only=False, retry_after=''):
         query = "SELECT t.*,a.name AS account_name,a.platform FROM attendance_activities t JOIN accounts a ON a.id=t.account_id WHERE t.active=1 AND t.availability_status='open' AND t.verified_at IS NOT NULL AND CAST(t.start_time AS REAL)<=? AND (t.end_time>? OR (t.end_time IS NULL AND t.open_ended=1)) AND NOT EXISTS (SELECT 1 FROM attendance_items i WHERE i.activity_id=t.id AND i.status IN ('succeeded','already_signed','unknown','queued','running','submitting'))"
-        now = time.time(); args = [now, now]
+        args = [time.time(), time.time()]
+        if auto_only:
+            query += " AND NOT EXISTS (SELECT 1 FROM attendance_items i WHERE i.activity_id=t.id AND i.status IN ('awaiting_input','manual_required')"
+            if retry_after:
+                query += ' AND i.updated_at>?'
+                args.append(str(retry_after))
+            query += ')'
         if account_ids:
             query += ' AND t.account_id IN (' + ','.join('?' for _ in account_ids) + ')'; args.extend(account_ids)
         with self.database.connect() as db:
@@ -495,17 +593,42 @@ class AttendanceStore:
             except (TypeError, ValueError): item['account_ids'] = []
             try: item['kinds'] = json.loads(item.pop('kinds_json') or '[]')
             except (TypeError, ValueError): item['kinds'] = []
+            item['course_filters'] = normalize_course_filters(course_filter=item.get('course_filter'))
+            item['course_filter'] = '、'.join(item['course_filters'])
+            try: item['windows'] = normalize_scan_windows(json.loads(item.pop('windows_json') or '[]'))
+            except (TypeError, ValueError, AttendanceError): item['windows'] = []
             try: item['location'] = json.loads(item.pop('location_json')) if item.get('location_json') else None
             except (TypeError, ValueError): item['location'] = None
             item.pop('location_json', None)
+            item['cooldown_until'] = 0
             item['enabled'] = bool(item['enabled'])
             participants = []
+            cooldowns = {}
             if item['account_ids']:
                 placeholders = ','.join('?' for _ in item['account_ids'])
                 participants = [dict(account) for account in db.execute(
                     f'SELECT id,name,status FROM accounts WHERE id IN ({placeholders}) ORDER BY name',
                     item['account_ids'],
                 )]
+                cooldowns = {
+                    row['account_id']: float(row['cooldown_until'] or 0)
+                    for row in db.execute(
+                        f'''SELECT account_id,cooldown_until FROM attendance_account_throttles
+                            WHERE account_id IN ({placeholders})''',
+                        item['account_ids'],
+                    )
+                }
+            now = time.time()
+            active_cooldowns = {
+                account_id: until for account_id, until in cooldowns.items()
+                if until > now
+            }
+            item['account_cooldowns'] = {account_id: cooldowns.get(account_id, 0) for account_id in item['account_ids']}
+            item['all_cooling'] = bool(item['account_ids']) and all(
+                cooldowns.get(account_id, 0) > now for account_id in item['account_ids']
+            )
+            if active_cooldowns:
+                item['cooldown_until'] = max(active_cooldowns.values())
         item['participants'] = participants
         return item
 
@@ -515,6 +638,178 @@ class AttendanceStore:
                 'SELECT id FROM attendance_auto_groups ORDER BY enabled DESC,created_at DESC LIMIT 100'
             )]
         return [self.auto_group(identifier) for identifier in identifiers]
+
+    def account_throttle(self, account_id):
+        with self.database.connect() as db:
+            row = db.execute(
+                'SELECT failures,cooldown_until FROM attendance_account_throttles WHERE account_id=?',
+                (account_id,),
+            ).fetchone()
+        return {
+            'account_id':account_id,
+            'failures':int(row['failures'] or 0) if row else 0,
+            'cooldown_until':float(row['cooldown_until'] or 0) if row else 0,
+        }
+
+    def note_account_throttle(self, account_id, now=None):
+        current = self.account_throttle(account_id)
+        failures = min(6, current['failures'] + 1)
+        delay = min(1800, 60 * (2 ** (failures - 1)))
+        cooldown_until = float(now if now is not None else time.time()) + delay
+        with self.database.connect() as db:
+            db.execute('''INSERT INTO attendance_account_throttles(account_id,failures,cooldown_until,updated_at)
+              VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET failures=excluded.failures,
+                cooldown_until=excluded.cooldown_until,updated_at=excluded.updated_at''',
+              (account_id, failures, cooldown_until, utc_now()))
+        return {
+            'account_id':account_id,
+            'failures':failures,
+            'cooldown_until':cooldown_until,
+            'delay_seconds':delay,
+        }
+
+    def clear_account_throttle(self, account_id):
+        with self.database.connect() as db:
+            db.execute('DELETE FROM attendance_account_throttles WHERE account_id=?', (account_id,))
+
+    def budget_hour(self, now=None):
+        current = now or datetime.now(ZoneInfo('Asia/Shanghai'))
+        return current.strftime('%Y-%m-%dT%H')
+
+    def request_budget(self, account_id, now=None):
+        hour = self.budget_hour(now)
+        with self.database.connect() as db:
+            row = db.execute(
+                '''SELECT scan_count,sign_count FROM attendance_request_budget
+                   WHERE account_id=? AND hour_key=?''',
+                (account_id, hour),
+            ).fetchone()
+        return {
+            'account_id':account_id,
+            'hour':hour,
+            'scan_count':int(row['scan_count'] or 0) if row else 0,
+            'sign_count':int(row['sign_count'] or 0) if row else 0,
+        }
+
+    def charge_request_budget(self, account_id, kind, *, scan_limit, sign_limit, now=None):
+        if kind not in {'scan','sign'}:
+            raise AttendanceError('未知的签到请求类型')
+        hour = self.budget_hour(now)
+        scan_limit = max(1, int(scan_limit))
+        sign_limit = max(1, int(sign_limit))
+        with self.database.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute(
+                '''SELECT scan_count,sign_count FROM attendance_request_budget
+                   WHERE account_id=? AND hour_key=?''',
+                (account_id, hour),
+            ).fetchone()
+            scan_count = int(row['scan_count'] or 0) if row else 0
+            sign_count = int(row['sign_count'] or 0) if row else 0
+            if kind == 'scan' and scan_count >= scan_limit:
+                raise AttendanceError(f'该账号本小时扫描额度已用完（{scan_limit} 次），签到请求仍会保留')
+            if kind == 'sign' and sign_count >= sign_limit:
+                raise AttendanceError(f'该账号本小时签到请求额度已用完（{sign_limit} 次），请等待下个小时')
+            column = 'scan_count' if kind == 'scan' else 'sign_count'
+            db.execute(f'''INSERT INTO attendance_request_budget(
+                account_id,hour_key,scan_count,sign_count,updated_at)
+              VALUES(?,?,?,?,?)
+              ON CONFLICT(account_id,hour_key) DO UPDATE SET
+                {column}={column}+1,updated_at=excluded.updated_at''',
+              (account_id, hour, int(kind == 'scan'), int(kind == 'sign'), utc_now()))
+            updated = db.execute(
+                '''SELECT scan_count,sign_count FROM attendance_request_budget
+                   WHERE account_id=? AND hour_key=?''',
+                (account_id, hour),
+            ).fetchone()
+        return {
+            'account_id':account_id,
+            'hour':hour,
+            'scan_count':int(updated['scan_count'] or 0),
+            'sign_count':int(updated['sign_count'] or 0),
+        }
+
+    def class_scan_state(self, class_key):
+        with self.database.connect() as db:
+            row = db.execute(
+                'SELECT * FROM attendance_class_scan_state WHERE class_key=?',
+                (str(class_key),),
+            ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        try:
+            item['members'] = json.loads(item.pop('members_json') or '[]')
+        except (TypeError, ValueError):
+            item['members'] = []
+        return item
+
+    def save_class_scan_state(self, state):
+        with self.database.connect() as db:
+            db.execute('''INSERT INTO attendance_class_scan_state(
+                class_key,course_id,class_id,course_name,class_name,members_json,anchor,
+                idle_streak,failure_streak,backoff_seconds,backoff_until,next_due_at,
+                last_scan_at,last_error,scan_count,anchor_switches,anchor_scans,fallback_scans,activity_count,updated_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              ON CONFLICT(class_key) DO UPDATE SET
+                course_id=excluded.course_id,class_id=excluded.class_id,
+                course_name=excluded.course_name,class_name=excluded.class_name,
+                members_json=excluded.members_json,anchor=excluded.anchor,
+                idle_streak=excluded.idle_streak,failure_streak=excluded.failure_streak,
+                backoff_seconds=excluded.backoff_seconds,backoff_until=excluded.backoff_until,
+                next_due_at=excluded.next_due_at,last_scan_at=excluded.last_scan_at,
+                last_error=excluded.last_error,scan_count=excluded.scan_count,
+                anchor_switches=excluded.anchor_switches,anchor_scans=excluded.anchor_scans,fallback_scans=excluded.fallback_scans,
+                activity_count=excluded.activity_count,updated_at=excluded.updated_at''',(
+                str(state.get('class_key') or ''),
+                str(state.get('course_id') or ''),
+                str(state.get('class_id') or ''),
+                str(state.get('course_name') or '')[:200],
+                str(state.get('class_name') or '')[:200],
+                json.dumps(sorted({str(member) for member in state.get('members') or [] if member})),
+                str(state.get('anchor') or ''),
+                max(0,int(state.get('idle_streak') or 0)),
+                max(0,int(state.get('failure_streak') or 0)),
+                max(0,int(state.get('backoff_seconds') or 0)),
+                float(state.get('backoff_until') or 0),
+                float(state.get('next_due_at') or 0),
+                float(state.get('last_scan_at') or 0),
+                str(state.get('last_error') or '')[:240],
+                max(0,int(state.get('scan_count') or 0)),
+                max(0,int(state.get('anchor_switches') or 0)),
+                max(0,int(state.get('anchor_scans') or 0)),
+                max(0,int(state.get('fallback_scans') or 0)),
+                max(0,int(state.get('activity_count') or 0)),
+                utc_now(),
+            ))
+
+    def class_scan_summary(self, account_ids=None):
+        selected = {str(account_id) for account_id in account_ids or [] if account_id}
+        with self.database.connect() as db:
+            rows = db.execute(
+                'SELECT * FROM attendance_class_scan_state ORDER BY updated_at DESC LIMIT 5000'
+            ).fetchall()
+        states = []
+        for row in rows:
+            try:
+                members = set(json.loads(row['members_json'] or '[]'))
+            except (TypeError, ValueError):
+                members = set()
+            if selected and not members.intersection(selected):
+                continue
+            states.append((dict(row), members))
+        current = time.time()
+        return {
+            'classes':len(states),
+            'anchored':sum(bool(state['anchor']) for state, _ in states),
+            'cold_classes':sum(int(state['idle_streak'] or 0) > 0 for state, _ in states),
+            'cooling_classes':sum(float(state['backoff_until'] or 0) > current for state, _ in states),
+            'scans':sum(int(state['scan_count'] or 0) for state, _ in states),
+            'anchor_switches':sum(int(state.get('anchor_switches') or 0) for state, _ in states),
+            'reused':0,
+            'anchor_scans':sum(int(state['anchor_scans'] or 0) for state, _ in states),
+            'fallback_scans':sum(int(state['fallback_scans'] or 0) for state, _ in states),
+        }
 
     def _validate_auto_group_materials(self, account_ids, kinds, location=None):
         if 'photo' in kinds:
@@ -530,13 +825,16 @@ class AttendanceStore:
         if 'location' in kinds and not location and not self.global_location():
             raise AttendanceError('位置签到需要先设置位置签到素材')
 
-    def create_auto_group(self, name, account_ids, kinds, interval_seconds=60, enabled=True, location=None):
+    def create_auto_group(self, name, account_ids, kinds, interval_seconds=30, enabled=True,
+                          location=None, course_filter='', course_filters=None, windows=None):
         unique = list(dict.fromkeys(str(account_id) for account_id in account_ids if account_id))
         if not unique or len(unique) > 100:
             raise AttendanceError('自动签到分组需要选择 1 至 100 个账号')
         kinds = [kind for kind in kinds if kind in {'normal','photo','gesture','code','location'}]
         if not kinds:
             raise AttendanceError('自动签到分组至少选择一种处理类型')
+        filters = normalize_course_filters(course_filters, course_filter)
+        windows = normalize_scan_windows(windows)
         placeholders = ','.join('?' for _ in unique)
         with self.database.connect() as db:
             accounts = db.execute(f'''SELECT id FROM accounts
@@ -546,22 +844,29 @@ class AttendanceStore:
             self._validate_auto_group_materials(unique,kinds,location)
             identifier = uuid.uuid4().hex; now = time.time()
             db.execute('''INSERT INTO attendance_auto_groups(
-                id,name,account_ids_json,kinds_json,interval_seconds,enabled,location_json,
+                id,name,account_ids_json,kinds_json,course_filter,windows_json,interval_seconds,enabled,location_json,
                 last_scan_at,last_error,last_batch_id,created_at,updated_at)
-              VALUES(?,?,?,?,?,?,?,?, '',NULL,?,?)''',
+              VALUES(?,?,?,?,?,?,?,?,?,?, '',NULL,?,?)''',
               (identifier,str(name or '').strip()[:80],json.dumps(unique),json.dumps(kinds),
-               max(30,min(3600,int(interval_seconds or 60))),int(bool(enabled)),
+               json.dumps(filters,ensure_ascii=False),json.dumps(windows,ensure_ascii=False),
+               max(30,min(3600,int(interval_seconds or 30))),int(bool(enabled)),
                json.dumps(location,ensure_ascii=False) if location else None,None,now,now))
         return self.auto_group(identifier)
 
     def save_auto_group(self, identifier, *, name=None, account_ids=None, kinds=None,
-                        interval_seconds=None, enabled=None, location=None):
+                        interval_seconds=None, enabled=None, location=None, course_filter=None,
+                        course_filters=None, windows=None):
         validate_materials = account_ids is not None or kinds is not None or location is not None
         current = self.auto_group(identifier)
         name = current['name'] if name is None else str(name).strip()[:80]
         account_ids = current['account_ids'] if account_ids is None else list(dict.fromkeys(account_ids))
         kinds = current['kinds'] if kinds is None else kinds
         kinds = [kind for kind in kinds if kind in {'normal','photo','gesture','code','location'}]
+        filters = normalize_course_filters(
+            course_filters if course_filters is not None else course_filter,
+            None,
+        ) if course_filters is not None or course_filter is not None else current['course_filters']
+        windows = current['windows'] if windows is None else normalize_scan_windows(windows)
         interval = current['interval_seconds'] if interval_seconds is None else max(30,min(3600,int(interval_seconds)))
         if not name or not account_ids or not kinds:
             raise AttendanceError('自动签到分组名称、账号和处理类型不能为空')
@@ -574,8 +879,9 @@ class AttendanceStore:
             if validate_materials:
                 self._validate_auto_group_materials(account_ids,kinds,location)
             db.execute('''UPDATE attendance_auto_groups SET name=?,account_ids_json=?,kinds_json=?,
-              interval_seconds=?,enabled=?,location_json=?,updated_at=? WHERE id=?''',
-              (name,json.dumps(account_ids),json.dumps(kinds),interval,
+              course_filter=?,windows_json=?,interval_seconds=?,enabled=?,location_json=?,updated_at=? WHERE id=?''',
+              (name,json.dumps(account_ids),json.dumps(kinds),json.dumps(filters,ensure_ascii=False),
+               json.dumps(windows,ensure_ascii=False),interval,
                int(current['enabled'] if enabled is None else bool(enabled)),
                json.dumps(location,ensure_ascii=False) if location is not None else
                  (json.dumps(current['location'],ensure_ascii=False) if current.get('location') else None),
@@ -615,12 +921,51 @@ class AttendanceStore:
         with self.database.connect() as db:
             db.execute('DELETE FROM attendance_codebook WHERE activity_id=?', (str(activity_id),))
 
+    def code_attempt(self, account_id, activity_id, now=None):
+        current = float(now if now is not None else time.time())
+        with self.database.connect() as db:
+            row = db.execute('''SELECT wrong_count,locked_until FROM attendance_code_attempts
+              WHERE account_id=? AND activity_id=?''', (account_id, str(activity_id))).fetchone()
+            if not row:
+                return {'wrong_count':0,'locked_until':0}
+            item = {
+                'wrong_count':int(row['wrong_count'] or 0),
+                'locked_until':float(row['locked_until'] or 0),
+            }
+            if item['locked_until'] and item['locked_until'] <= current:
+                db.execute('''UPDATE attendance_code_attempts
+                  SET wrong_count=0,locked_until=0,updated_at=?
+                  WHERE account_id=? AND activity_id=?''',
+                  (utc_now(), account_id, str(activity_id)))
+                return {'wrong_count':0,'locked_until':0}
+            return item
+
+    def note_code_attempt(self, account_id, activity_id, *, locked=False, now=None):
+        current = float(now if now is not None else time.time())
+        state = self.code_attempt(account_id, activity_id, now=current)
+        wrong_count = 3 if locked else min(3, state['wrong_count'] + 1)
+        locked_until = current + 3600 if locked or wrong_count >= 3 else state['locked_until']
+        with self.database.connect() as db:
+            db.execute('''INSERT INTO attendance_code_attempts(
+                account_id,activity_id,wrong_count,locked_until,updated_at)
+              VALUES(?,?,?,?,?)
+              ON CONFLICT(account_id,activity_id) DO UPDATE SET
+                wrong_count=excluded.wrong_count,locked_until=excluded.locked_until,
+                updated_at=excluded.updated_at''',
+              (account_id, str(activity_id), wrong_count, locked_until, utc_now()))
+        return {'wrong_count':wrong_count,'locked_until':locked_until}
+
+    def clear_code_attempt(self, account_id, activity_id):
+        with self.database.connect() as db:
+            db.execute('DELETE FROM attendance_code_attempts WHERE account_id=? AND activity_id=?',
+                       (account_id, str(activity_id)))
+
     def auto_settings(self, account_id):
         with self.database.connect() as db:
             row = db.execute('SELECT * FROM attendance_auto_settings WHERE account_id=?', (account_id,)).fetchone()
         if not row:
             return {'account_id':account_id,'enabled':False,'kinds':['normal','gesture','code','qr','location'],
-                    'course_filter':'','interval_seconds':60,'location':None,'last_scan_at':0,'last_error':''}
+                    'course_filter':'','interval_seconds':30,'location':None,'last_scan_at':0,'last_error':''}
         item = dict(row)
         try: item['kinds'] = json.loads(item.pop('kinds_json'))
         except (TypeError, ValueError): item['kinds'] = []
@@ -634,7 +979,7 @@ class AttendanceStore:
         current = self.auto_settings(account_id)
         kinds = [kind for kind in payload.get('kinds', current['kinds']) if kind in {'normal','gesture','code','qr','location','photo'}]
         course_filter = str(payload.get('course_filter', current['course_filter']) or '').strip()[:200]
-        interval = max(30, min(3600, int(payload.get('interval_seconds', current['interval_seconds']) or 60)))
+        interval = max(30, min(3600, int(payload.get('interval_seconds', current['interval_seconds']) or 30)))
         location = payload.get('location', current['location'])
         now = utc_now()
         with self.database.connect() as db:

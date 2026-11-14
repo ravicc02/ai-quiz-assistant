@@ -2,6 +2,10 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 playwright==1.59.0
 browser-use==0.12.6
+click==8.3.1
+pillow==12.1.1
+requests==2.32.5
+chardet>=5.2.0,<6
 pydantic==2.12.5
 beautifulsoup4>=4.12
 python-multipart>=0.0.20

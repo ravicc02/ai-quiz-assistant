@@ -4,7 +4,6 @@ import asyncio
 from contextlib import contextmanager
 import ipaddress
 import json
-import os
 from pathlib import Path
 import socket
 import time
@@ -12,7 +11,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, FileResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .contracts import AttendanceError, SignInput, is_expired_qr_message, parse_qr_payload, qr_credentials
 
@@ -42,12 +41,30 @@ class LocationMaterial(BaseModel):
     address: str = Field(min_length=1,max_length=200)
 
 
+class ScanWindow(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    days: list[int] = Field(min_length=1,max_length=7)
+    start: str = Field(pattern=r'^(?:[01]\d|2[0-3]):[0-5]\d$')
+    end: str = Field(pattern=r'^(?:[01]\d|2[0-3]):[0-5]\d$')
+
+    @field_validator('days')
+    @classmethod
+    def validate_days(cls, value):
+        days = sorted(set(int(day) for day in value))
+        if not days or any(day < 1 or day > 7 for day in days):
+            raise ValueError('星期必须在 1 至 7 之间')
+        return days
+
+
 class AutoGroupRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1,max_length=80)
     account_ids: list[str] = Field(min_length=1,max_length=100)
     kinds: list[str] = Field(min_length=1,max_length=6)
-    interval_seconds: int = Field(default=60,ge=30,le=3600)
+    course_filter: str = Field(default='',max_length=200)
+    course_filters: list[str] | None = Field(default=None,max_length=20)
+    windows: list[ScanWindow] = Field(default_factory=list,max_length=20)
+    interval_seconds: int = Field(default=30,ge=30,le=3600)
     enabled: bool = True
     location: LocationMaterial | None = None
 
@@ -57,9 +74,17 @@ class AutoGroupUpdate(BaseModel):
     name: str | None = Field(default=None,min_length=1,max_length=80)
     account_ids: list[str] | None = Field(default=None,min_length=1,max_length=100)
     kinds: list[str] | None = Field(default=None,min_length=1,max_length=6)
+    course_filter: str | None = Field(default=None,max_length=200)
+    course_filters: list[str] | None = Field(default=None,max_length=20)
+    windows: list[ScanWindow] | None = Field(default=None,max_length=20)
     interval_seconds: int | None = Field(default=None,ge=30,le=3600)
     enabled: bool | None = None
     location: LocationMaterial | None = None
+
+
+class AutoGroupCourseRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    account_ids: list[str] = Field(min_length=1,max_length=100)
 
 
 class RelaySettingsRequest(BaseModel):
@@ -176,7 +201,13 @@ def share_app(service):
                     raise AttendanceError('该链接不是二维码签到会话')
                 qr_credentials(payload.text,next(iter(activities)))
                 service.store.capture_share(record['id'],payload.text)
-            service.start(record['batch_id'],SignInput(qr=payload.text),share=token,source='share')
+            service.start(
+                record['batch_id'],
+                SignInput(qr=payload.text),
+                share=token,
+                source='share',
+                rush=True,
+            )
             return public_share_batch(service,record)
         except AttendanceError as error:
             raise HTTPException(409,str(error)) from error
@@ -191,7 +222,7 @@ def share_app(service):
         if len(recent)>1000:
             for key in [key for key,values in recent.items() if not values or now-values[-1]>60]: recent.pop(key,None)
         history.append(now)
-        try: return public_batch(service.start(record['batch_id'],payload,share=token))
+        try: return public_batch(service.start(record['batch_id'],payload,share=token,rush=True))
         except AttendanceError as error: raise HTTPException(409,str(error)) from error
     return app
 
@@ -404,14 +435,28 @@ def attendance_router(service, gateway, open_activity=None):
 
     @api.get('/auto-groups')
     async def auto_groups():
-        return service.store.auto_groups()
+        return service.auto_groups()
 
     @api.post('/auto-groups')
     async def create_auto_group(payload: AutoGroupRequest):
         try:
             public = payload.model_dump()
             location = public.pop('location')
-            return service.store.create_auto_group(location=location,**public)
+            created = service.store.create_auto_group(location=location,**public)
+            return service.auto_group(created['id'])
+        except AttendanceError as error: raise HTTPException(409,str(error)) from error
+
+    @api.post('/auto-groups/courses')
+    async def auto_group_courses(payload: AutoGroupCourseRequest):
+        try:
+            return await service.course_catalog(payload.account_ids)
+        except AttendanceError as error: raise HTTPException(409,str(error)) from error
+
+    @api.post('/auto-groups/{identifier}/scan')
+    async def scan_auto_group(identifier: str):
+        try:
+            return await service.scan_auto_group_now(identifier)
+        except KeyError as error: raise HTTPException(404,str(error)) from error
         except AttendanceError as error: raise HTTPException(409,str(error)) from error
 
     @api.patch('/auto-groups/{identifier}')
@@ -420,7 +465,8 @@ def attendance_router(service, gateway, open_activity=None):
             values = payload.model_dump(exclude_unset=True)
             if 'location' in values:
                 values['location'] = values['location']
-            return service.store.save_auto_group(identifier,**values)
+            service.store.save_auto_group(identifier,**values)
+            return service.auto_group(identifier)
         except KeyError as error: raise HTTPException(404,str(error)) from error
         except AttendanceError as error: raise HTTPException(409,str(error)) from error
 
@@ -434,15 +480,7 @@ def attendance_router(service, gateway, open_activity=None):
     @api.get('/relay')
     async def relay_settings():
         settings_payload = gateway.settings() if hasattr(gateway,'settings') else {}
-        hostname = urlsplit(settings_payload.get('base_url') or '').hostname or ''
-        token = os.environ.get('MUMU_ATTENDANCE_DOMAIN_TOKEN','').strip()
-        return {
-            **settings_payload,
-            'cname_name':hostname,
-            'txt_name':('_mumu-attendance.' + hostname) if hostname and token else '',
-            'txt_value':token,
-            'multi_domain_ready':bool(settings_payload.get('cname_target') and token),
-        }
+        return dict(settings_payload)
 
     async def check_relay(base_url, admin_secret):
         from .relay import RelayClient

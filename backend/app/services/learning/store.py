@@ -112,7 +112,7 @@ class LearningStore:
             active = connection.execute("SELECT id FROM learning_runs WHERE course_id=? AND status IN ('queued','running','paused','awaiting_user','stopping')", (course_id,)).fetchone()
             if active: raise RuntimeError("该课程已有执行任务")
             previous = connection.execute("SELECT id,attempt FROM learning_runs WHERE course_id=? ORDER BY attempt DESC LIMIT 1", (course_id,)).fetchone()
-            connection.execute("INSERT INTO learning_runs(id,course_id,account_id,status,attempt,parent_id,created_at,updated_at,engine_version,headless) VALUES (?,?,?,'queued',?,?,?,?,'mumu-learning-resources-v1',?)", (identifier, course_id, course["account_id"], previous["attempt"] + 1 if previous else 1, previous["id"] if previous else None, utc_now(), utc_now(), int(headless)))
+            connection.execute("INSERT INTO learning_runs(id,course_id,account_id,status,attempt,parent_id,created_at,updated_at,engine_version,headless) VALUES (?,?,?,'queued',?,?,?,?,'mumu-learning-resources-v2',?)", (identifier, course_id, course["account_id"], previous["attempt"] + 1 if previous else 1, previous["id"] if previous else None, utc_now(), utc_now(), int(headless)))
         run = self.run(identifier)
         self.database.diagnostics.start("learning", identifier, run, self.database.get_account(course["account_id"]))
         return run
@@ -197,42 +197,85 @@ class LearningStore:
         with self.database.connect() as connection:
             return [dict(row) for row in connection.execute("SELECT * FROM learning_artifacts WHERE run_id=? ORDER BY created_at", (identifier,))]
 
-    def recover(self):
+    def recover(self, retry_limit=3):
         with self.database.connect() as connection:
-            rows = connection.execute("SELECT id,status,auto_retry_count FROM learning_runs WHERE status IN ('queued','running','paused','awaiting_user','stopping')").fetchall()
+            rows = connection.execute(
+                "SELECT id,status,error,auto_retry_count FROM learning_runs "
+                "WHERE status IN ('queued','running','paused','awaiting_user','stopping')"
+            ).fetchall()
         for row in rows:
             manual = row["status"] in {"paused", "awaiting_user", "stopping"}
-            reason = (
-                f"本地服务重启，原任务状态为 {row['status']}，需要人工确认。"
-                if manual else
-                "本地服务重启，原浏览器会话已结束，将自动重新读取平台进度。"
-            )
+            exhausted = not manual and int(row["auto_retry_count"] or 0) >= int(retry_limit)
+            if manual:
+                reason = f"本地服务重启，原任务状态为 {row['status']}，需要人工确认。"
+            elif exhausted:
+                reason = "本地服务重启，原浏览器会话已结束；自动重试次数已用完，请手动重试。"
+            else:
+                reason = "本地服务重启，原浏览器会话已结束，将自动重新读取平台进度。"
             self.update(
                 row["id"], status="interrupted",
-                phase="interrupted" if manual else "auto_retry_pending",
+                phase="interrupted" if manual or exhausted else "auto_retry_pending",
                 error=reason, finished_at=utc_now(),
             )
             self.event(row["id"], "interrupted", "本地服务重启，任务已中断")
+            if exhausted:
+                self.event(row["id"], "retry_exhausted", reason, {
+                    "attempt": int(row["auto_retry_count"] or 0),
+                    "limit": int(retry_limit),
+                })
         return [dict(row) for row in rows]
+
+    def normalize_exhausted_retries(self, limit=3):
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT id,error,auto_retry_count FROM learning_runs
+                   WHERE status='interrupted' AND auto_retry_count>=?
+                     AND (phase='auto_retry_pending'
+                          OR error LIKE '%自动重新读取平台进度%')""",
+                (int(limit),),
+            ).fetchall()
+        normalized = []
+        marker = f"已自动重试 {int(limit)} 次，仍未恢复"
+        for row in rows:
+            detail = str(row["error"] or "网课执行中断").rstrip("。")
+            detail = detail.replace("将自动重新读取平台进度", "自动恢复未完成")
+            if marker in detail:
+                message = detail if "请手动重试" in detail else f"{detail}，请手动重试。"
+            else:
+                message = f"{detail}；{marker}，请手动重试。"
+            self.update(row["id"], phase="interrupted", error=message)
+            self.event(row["id"], "retry_exhausted", message, {
+                "attempt": int(row["auto_retry_count"] or 0),
+                "limit": int(limit),
+            })
+            normalized.append(self.run(row["id"]))
+        return normalized
 
     def retryable_interrupted(self, limit=3):
         with self.database.connect() as connection:
-            rows = connection.execute("""SELECT id,error,auto_retry_count FROM learning_runs
+            rows = connection.execute("""SELECT id,course_id,error,auto_retry_count FROM learning_runs
               WHERE status='interrupted' AND phase='auto_retry_pending' AND auto_retry_count<?
-              ORDER BY julianday(updated_at),rowid""", (limit,)).fetchall()
+              ORDER BY julianday(updated_at) DESC,rowid DESC""", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
     def reopen_for_retry(self, identifier, reason='', limit=3):
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT status,auto_retry_count FROM learning_runs WHERE id=?",
+                "SELECT status,course_id,auto_retry_count FROM learning_runs WHERE id=?",
                 (identifier,),
             ).fetchone()
             if not row:
                 raise KeyError("网课任务不存在")
             if row["status"] != "interrupted":
                 raise RuntimeError("只有已中断的网课任务可以自动重试")
+            active = connection.execute(
+                "SELECT 1 FROM learning_runs WHERE course_id=? AND id<>? AND status IN "
+                "('queued','running','paused','awaiting_user','stopping') LIMIT 1",
+                (row["course_id"], identifier),
+            ).fetchone()
+            if active:
+                raise RuntimeError("该课程已有执行中的任务，不能自动重试")
             retry_count = int(row["auto_retry_count"] or 0)
             if retry_count >= limit:
                 raise RuntimeError("自动重试次数已用完")

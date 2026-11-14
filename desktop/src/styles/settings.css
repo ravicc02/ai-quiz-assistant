@@ -1,0 +1,599 @@
+/* finesse · register=product · shell=settings-sheet · A=cool-slate+cobalt
+ * B=fixed-sans-500-400 · C=product-colophon · D=css-feedback · E=quiet-instrument
+ * SOUL=5 SPECTACLE=1 DENSITY=5 */
+.application-settings-dialog .settings-content-sections {
+  width: 100%;
+}
+
+.application-settings-dialog .settings-section-stack {
+  display: grid;
+  gap: 16px;
+  width: 100%;
+}
+
+.application-settings-dialog .settings-card {
+  overflow: hidden;
+  border: 1px solid rgba(24, 33, 44, .12);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(20, 30, 42, .04);
+}
+
+.application-settings-dialog .settings-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 68px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfd;
+  padding: 16px 20px;
+}
+
+.application-settings-dialog .settings-card-index {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--subtle);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.application-settings-dialog .settings-card-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.application-settings-dialog .settings-card-title h3 {
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 500;
+}
+
+.application-settings-dialog .settings-card-title p {
+  max-width: 620px;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.application-settings-dialog .settings-card-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.application-settings-dialog .settings-card-body {
+  padding: 0 20px;
+}
+
+.application-settings-dialog .settings-card-body.flush {
+  padding: 0;
+}
+
+.application-settings-dialog .settings-card-body.padded {
+  padding: 20px;
+}
+
+.application-settings-dialog .settings-card .preference-section {
+  margin: 0;
+}
+
+.application-settings-dialog .settings-card .preference-section + .preference-section {
+  margin-top: 16px;
+}
+
+.application-settings-dialog .settings-card .preference-row {
+  min-height: 64px;
+  gap: 24px;
+  padding: 14px 0;
+}
+
+.application-settings-dialog .settings-card .preference-row:last-child {
+  border-bottom: 0;
+}
+
+.application-settings-dialog .settings-card .preference-row strong {
+  font-size: 14px;
+}
+
+.application-settings-dialog .settings-card .preference-row small {
+  max-width: 580px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.application-settings-dialog .settings-scope,
+.application-settings-dialog .settings-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.application-settings-dialog .settings-state::before {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--subtle);
+  content: "";
+}
+
+.application-settings-dialog .settings-state.ready::before {
+  background: var(--green);
+}
+
+.application-settings-dialog .settings-state.error::before {
+  background: var(--red);
+}
+
+.application-settings-dialog .settings-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.application-settings-dialog .settings-control-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.application-settings-dialog .settings-control-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-width: 0;
+  min-height: 76px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 0;
+}
+
+.application-settings-dialog .settings-control-cell:nth-child(odd) {
+  padding-right: 20px;
+}
+
+.application-settings-dialog .settings-control-cell:nth-child(even) {
+  border-left: 1px solid var(--line);
+  padding-left: 20px;
+}
+
+.application-settings-dialog .settings-control-cell:nth-last-child(-n+2) {
+  border-bottom: 0;
+}
+
+.application-settings-dialog .settings-control-grid.three .settings-control-cell {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 16px 16px 0;
+}
+
+.application-settings-dialog .settings-control-grid.three .settings-control-cell + .settings-control-cell {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+}
+
+.application-settings-dialog .settings-control-grid.three .settings-control-cell {
+  border-bottom: 0;
+}
+
+.application-settings-dialog .settings-control-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.application-settings-dialog .settings-control-copy strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.application-settings-dialog .settings-control-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.application-settings-dialog .settings-number,
+.application-settings-dialog .settings-select {
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.application-settings-dialog .settings-number {
+  width: 84px;
+  padding: 0 10px;
+  text-align: right;
+}
+
+.application-settings-dialog .settings-select {
+  min-width: 108px;
+  padding: 0 10px;
+}
+
+.application-settings-dialog .settings-number:focus,
+.application-settings-dialog .settings-select:focus,
+.application-settings-dialog .settings-field input:focus {
+  border-color: var(--accent);
+  outline: 0;
+  box-shadow: 0 0 0 2px var(--focus);
+}
+
+.application-settings-dialog .settings-unit,
+.application-settings-dialog .settings-number-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.application-settings-dialog .settings-range-wrap {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 38px;
+  align-items: center;
+  gap: 12px;
+  width: min(260px, 100%);
+  flex: none;
+}
+
+.application-settings-dialog .settings-range-wrap input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.application-settings-dialog .settings-range-wrap output {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.application-settings-dialog .settings-note {
+  border-top: 1px solid var(--line);
+  padding: 12px 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.application-settings-dialog .settings-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.application-settings-dialog .settings-action-bar,
+.application-settings-dialog .preferences-save-bar {
+  position: static;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 64px;
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, .97);
+  padding: 14px 0;
+}
+
+.application-settings-dialog .settings-action-bar .preferences-feedback,
+.application-settings-dialog .preferences-save-bar .preferences-feedback {
+  min-width: 0;
+  flex: 1;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.application-settings-dialog .settings-feedback-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--subtle);
+}
+
+.application-settings-dialog .settings-feedback-dot.dirty {
+  background: var(--orange);
+}
+
+.application-settings-dialog .settings-feedback-dot.saved {
+  background: var(--green);
+}
+
+.application-settings-dialog .settings-feedback-dot.error {
+  background: var(--red);
+}
+
+.application-settings-dialog .settings-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.application-settings-dialog .settings-field > span:first-child {
+  min-height: 18px;
+}
+
+.application-settings-dialog .settings-field input,
+.application-settings-dialog .settings-field select {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0 12px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.application-settings-dialog .settings-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 20px;
+}
+
+.application-settings-dialog .settings-form-grid .full {
+  grid-column: 1 / -1;
+}
+
+.application-settings-dialog .settings-loading,
+.application-settings-dialog .settings-load-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 160px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.application-settings-dialog .settings-load-error {
+  border-color: rgba(182, 65, 59, .22);
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.application-settings-dialog .settings-path-list {
+  display: grid;
+}
+
+.application-settings-dialog .settings-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  min-height: 72px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 0;
+}
+
+.application-settings-dialog .settings-path-row:last-child {
+  border-bottom: 0;
+}
+
+.application-settings-dialog .settings-path-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.application-settings-dialog .settings-path-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.application-settings-dialog .settings-path-copy code {
+  color: var(--muted);
+  font: 12px/1.6 "Cascadia Mono", "Consolas", monospace;
+  overflow-wrap: anywhere;
+}
+
+.application-settings-dialog .settings-subsection-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 0 12px;
+}
+
+.application-settings-dialog .settings-subsection-title h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.application-settings-dialog .settings-subsection-title span {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.application-settings-dialog .settings-inline-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.application-settings-dialog .settings-inline-form input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0 11px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.application-settings-dialog .automation-list {
+  display: grid;
+}
+
+.application-settings-dialog .automation-account {
+  display: grid;
+  grid-template-columns: minmax(180px, .9fr) minmax(0, 1.8fr);
+  align-items: center;
+  gap: 24px;
+  border-bottom: 1px solid var(--line);
+  padding: 15px 0;
+}
+
+.application-settings-dialog .automation-account:last-child {
+  border-bottom: 0;
+}
+
+.application-settings-dialog .automation-account-header {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.application-settings-dialog .automation-account-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.application-settings-dialog .automation-account-name > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.application-settings-dialog .automation-account-name strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.application-settings-dialog .automation-account-state {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.application-settings-dialog .automation-account-state.validation-error {
+  color: var(--red);
+}
+
+.application-settings-dialog .automation-enabled {
+  color: var(--green);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.application-settings-dialog .automation-controls {
+  display: grid;
+  grid-template-columns: .7fr 1.3fr .7fr;
+  align-items: end;
+  gap: 16px;
+  min-width: 0;
+}
+
+.application-settings-dialog .automation-control {
+  display: grid;
+  align-content: end;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.application-settings-dialog .automation-control > .switch-input {
+  justify-self: start;
+  margin-bottom: 9px;
+}
+
+.application-settings-dialog .automation-control .interval-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px;
+  gap: 6px;
+}
+
+.application-settings-dialog .automation-control .interval-control input,
+.application-settings-dialog .automation-control .interval-control select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0 9px;
+  color: var(--ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1040px) {
+  .application-settings-dialog .settings-control-cell:nth-child(odd) {
+    padding-right: 14px;
+  }
+
+  .application-settings-dialog .settings-control-cell:nth-child(even) {
+    padding-left: 14px;
+  }
+
+  .application-settings-dialog .settings-form-grid {
+    gap: 16px;
+  }
+
+  .application-settings-dialog .automation-account {
+    grid-template-columns: 164px minmax(0, 1fr);
+    gap: 18px;
+  }
+
+  .application-settings-dialog .automation-controls {
+    gap: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .application-settings-dialog *,
+  .application-settings-dialog *::before,
+  .application-settings-dialog *::after {
+    scroll-behavior: auto !important;
+  }
+}

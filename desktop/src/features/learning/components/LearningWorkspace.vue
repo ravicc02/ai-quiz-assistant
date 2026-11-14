@@ -4,6 +4,7 @@ import { BookOpen, CheckCheck, CircleAlert, ExternalLink, Image, LoaderCircle, M
 import { api } from "../../../app/api.js";
 import { mergeJobState, reconcileEvents } from "../../tasks/lib/state.js";
 import PlatformLogo from "../../platforms/components/PlatformLogo.vue";
+import LearningAccountPicker from "./LearningAccountPicker.vue";
 import ScreenshotViewer from "../../tasks/components/ScreenshotViewer.vue";
 import LiveBrowser from "../../tasks/components/LiveBrowser.vue";
 import { conciseMessage } from "../../tasks/lib/presentation.js";
@@ -167,9 +168,11 @@ onUnmounted(() => { disposed = true; generation++; clearTimeout(timer); });
     <section class="learning-courses">
       <div class="learning-title"><BookOpen :size="20" /><h2>网课</h2><span class="count">{{ courses.length }}</span></div>
       <div class="learning-filters">
-        <select :value="accountId" aria-label="网课账号" :disabled="!learningAccounts.length" @change="emit('update:accountId', $event.target.value)"><option v-if="!learningAccounts.length" value="">暂无网课账号</option><option v-for="item in learningAccounts" :key="item.id" :value="item.id">{{ item.name }} · {{ platformById[item.platform]?.label }}</option></select>
-        <input v-if="yearFilter" v-model.number="year" type="number" min="2000" max="2100" aria-label="网课开课年份">
-        <button class="button dark" type="button" :disabled="!account || account.status !== 'ready' || collecting[accountId]" @click="collect"><LoaderCircle v-if="collecting[accountId]" class="spinning" :size="14" /><RefreshCw v-else :size="14" />{{ collecting[accountId] ? '采集中' : '采集课程' }}</button>
+        <LearningAccountPicker :accounts="learningAccounts" :model-value="accountId" @update:model-value="emit('update:accountId', $event)" />
+        <div class="learning-filter-actions">
+          <input v-if="yearFilter" v-model.number="year" type="number" min="2000" max="2100" aria-label="网课开课年份">
+          <button class="button dark" type="button" :disabled="!account || account.status !== 'ready' || collecting[accountId]" @click="collect"><LoaderCircle v-if="collecting[accountId]" class="spinning" :size="14" /><RefreshCw v-else :size="14" />{{ collecting[accountId] ? '采集中' : '采集课程' }}</button>
+        </div>
       </div>
       <button v-if="account && !yearFilter" class="button light" type="button" @click="addCourseOpen=true"><Plus :size="14" />加入课程</button>
       <label class="learning-search"><Search :size="14" /><input v-model="query" aria-label="搜索网课" placeholder="搜索课程"></label>
@@ -215,49 +218,49 @@ onUnmounted(() => { disposed = true; generation++; clearTimeout(timer); });
 </template>
 
 <style scoped>
-.learning-browser-mode { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.learning-browser-mode { margin-left: auto; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
 .learning-workspace { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: 320px minmax(0,1fr); min-height: 0; min-width: 0; background: var(--surface); }
-.learning-courses { display: flex; flex-direction: column; gap: 16px; padding: 22px 16px; min-height: 0; border-right: 1px solid var(--line); }
+.learning-courses { display: flex; flex-direction: column; gap: 16px; padding: 24px 16px; min-height: 0; border-right: 1px solid var(--line); }
 .learning-title { display: flex; align-items: center; gap: 9px; }
 .learning-title h2 { font-size: 19px; }
-.learning-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
-.learning-filters select { min-width: 110px; max-width: 150px; }
-.learning-filters input { width: 75px; }
-.learning-filters select,.learning-filters input { height: 32px; border: 1px solid var(--line); background: var(--surface); border-radius: 4px; padding: 0 6px; font-size: 12px; }
-.learning-filters .button { font-size: 11px; min-height: 32px; padding: 5px 9px; }
-.learning-search { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 5px; padding: 8px; color: var(--muted); }
-.learning-search input { min-width: 0; flex: 1; border: 0; background: transparent; font-size: 12px; outline: none; }
+.learning-filters { display: grid; gap: 7px; }
+.learning-filter-actions { display: flex; align-items: center; gap: 7px; }
+.learning-filter-actions input { width: 75px; }
+.learning-filter-actions input { height: 36px; border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius-control); padding: 0 10px; font-size: var(--text-sm); }
+.learning-filters .button { font-size: var(--text-sm); min-height: 36px; padding: 7px 11px; }
+.learning-search { display: flex; align-items: center; gap: 8px; min-height: 38px; border: 1px solid var(--line); border-radius: var(--radius-control); padding: 8px 10px; color: var(--muted); }
+.learning-search input { min-width: 0; flex: 1; border: 0; background: transparent; font-size: var(--text-sm); outline: none; }
 .learning-course-list { flex: 1; min-height: 0; overflow-y: auto; }
-.learning-course-list article { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); padding: 13px 5px; }
+.learning-course-list article { display: flex; align-items: center; gap: 8px; min-height: 72px; border-bottom: 1px solid var(--line); padding: 14px 6px; }
 .learning-course-list article.selected { background: var(--accent-soft); }
 .learning-course-select { display: flex; flex: 1; align-items: center; gap: 9px; min-width: 0; border: 0; background: transparent; padding: 4px; text-align: left; }
 .learning-course-select span { min-width: 0; }
-.learning-course-select strong { display: block; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-.learning-course-select small { display: block; font-size: 10px; color: var(--muted); margin-top: 5px; }
-.learning-detail { display: flex; flex-direction: column; gap: 15px; padding: 22px; min-width: 0; min-height: 0; }
+.learning-course-select strong { display: block; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.learning-course-select small { display: block; font-size: var(--text-xs); color: var(--muted); margin-top: 5px; }
+.learning-detail { display: flex; flex-direction: column; gap: 16px; padding: 24px; min-width: 0; min-height: 0; }
 .learning-run-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
 .learning-run-heading > div { min-width: 0; }
-.learning-run-heading h2 { font-size: 17px; line-height: 1.6; margin-top: 10px; overflow-wrap: anywhere; }
-.learning-retry-count { margin-left: 8px; color: var(--orange); font-size: 10px; white-space: nowrap; }
-.learning-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-height: 32px; }
-.learning-controls .button { font-size: 11px; min-height: 32px; }
-.learning-progress > div:first-child { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
+.learning-run-heading h2 { font-size: 20px; line-height: 1.5; margin-top: 10px; overflow-wrap: anywhere; }
+.learning-retry-count { margin-left: 8px; color: var(--orange); font-size: var(--text-xs); white-space: nowrap; }
+.learning-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 36px; }
+.learning-controls .button { font-size: var(--text-sm); min-height: 36px; }
+.learning-progress > div:first-child { display: flex; justify-content: space-between; gap: 10px; font-size: var(--text-sm); }
 .learning-progress .progress-track { margin-top: 10px; }
-.learning-progress p { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; line-height: 1.7; margin-top: 9px; overflow-wrap: anywhere; }
+.learning-progress p { display: flex; justify-content: space-between; gap: 12px; font-size: var(--text-sm); line-height: 1.7; margin-top: 9px; overflow-wrap: anywhere; }
 .learning-progress .learning-blocker { display: block; color: var(--orange); background: var(--orange-soft); padding: 10px; border-radius: 4px; }
-.learning-result-line { font-size: 12px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
+.learning-result-line { font-size: var(--text-sm); line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
 .learning-result-line.interrupted,.learning-result-line.incomplete { color: var(--red); }
-.learning-live-grid { display: grid; grid-template-columns: minmax(0,1fr) 260px; flex: 1; min-height: 0; gap: 18px; }
-.learning-browser { min-height: 0; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); }
+.learning-live-grid { display: grid; grid-template-columns: minmax(0,1fr) 280px; flex: 1; min-height: 0; gap: 20px; }
+.learning-browser { min-height: 0; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); }
 .learning-log { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
 .learning-log h3 { display: flex; justify-content: space-between; gap: 6px; font-size: 13px; }
 .learning-log-stream { overflow-y: auto; min-height: 0; flex: 1; }
 .learning-log-stream article { display: flex; align-items: start; gap: 9px; border-bottom: 1px solid var(--line); padding: 12px 0; }
 .learning-log-stream .event-dot { margin-top: 6px; flex: none; }
-.learning-log-stream strong { font-size: 11px; line-height: 1.8; font-weight: 500; overflow-wrap: anywhere; }
-.learning-log-stream time { display: block; color: var(--muted); font-size: 10px; margin-top: 5px; }
-.learning-message { font-size: 11px; color: var(--green); }
-.learning-error { display: flex; align-items: center; gap: 8px; padding: 10px; color: var(--red); background: var(--red-soft); font-size: 12px; overflow-wrap: anywhere; border-radius: 4px; }
+.learning-log-stream strong { font-size: var(--text-sm); line-height: 1.7; font-weight: 500; overflow-wrap: anywhere; }
+.learning-log-stream time { display: block; color: var(--muted); font-size: var(--text-xs); margin-top: 5px; }
+.learning-message { font-size: var(--text-sm); color: var(--green); }
+.learning-error { display: flex; align-items: center; gap: 8px; padding: 10px; color: var(--red); background: var(--red-soft); font-size: var(--text-sm); overflow-wrap: anywhere; border-radius: 4px; }
 .job-badge.awaiting_user { color: var(--orange); background: var(--orange-soft); }
-@media(max-width:1400px) { .learning-workspace { grid-template-columns: 285px minmax(0,1fr); } .learning-detail { padding: 18px; } .learning-live-grid { grid-template-columns: minmax(0,1fr) 225px; gap: 12px; } }
+@media(max-width:1400px) { .learning-workspace { grid-template-columns: 300px minmax(0,1fr); } .learning-detail { padding: 20px; } .learning-live-grid { grid-template-columns: minmax(0,1fr) 250px; gap: 16px; } }
 </style>

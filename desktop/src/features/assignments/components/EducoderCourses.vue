@@ -60,14 +60,14 @@ onUnmounted(() => { generation++; });
 </template>
 <style scoped>
 .educoder-course-scope { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:0 0 14px; }
-.educoder-course-names { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--muted); }
-.educoder-course-scope p { flex-basis:100%; font-size:12px; }
+.educoder-course-names { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size: var(--text-sm); color:var(--muted); }
+.educoder-course-scope p { flex-basis:100%; font-size: var(--text-sm); }
 .educoder-courses-dialog { width:540px; max-width:calc(100vw - 64px); }
-.educoder-course-toolbar { display:flex; align-items:center; justify-content:space-between; margin:12px 0; color:var(--muted); font-size:12px; }
+.educoder-course-toolbar { display:flex; align-items:center; justify-content:space-between; margin:12px 0; color:var(--muted); font-size: var(--text-sm); }
 .educoder-course-list { max-height:380px; overflow:auto; border-top:1px solid var(--line); }
 .educoder-course-list label { display:flex; align-items:center; gap:12px; padding:16px 4px; border-bottom:1px solid var(--line); cursor:pointer; }
 .educoder-course-list strong { flex:1; min-width:0; overflow-wrap:anywhere; font-size:13px; }
 .educoder-course-list svg { color:var(--accent); }
-.educoder-course-list span,.educoder-course-count { color:var(--muted); font-size:11px; }
+.educoder-course-list span,.educoder-course-count { color:var(--muted); font-size: var(--text-xs); }
 .educoder-course-count { margin-right:auto; }.educoder-course-list .unavailable { color:var(--muted); }
 </style>
