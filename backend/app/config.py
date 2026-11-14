@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import shutil
@@ -71,17 +72,44 @@ def _long_path(path: Path) -> Path:
     return Path("\\\\?\\" + value)
 
 
+def _windows_path_alias(path: Path, function: str) -> Path | None:
+    if os.name != "nt":
+        return None
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = getattr(ctypes.windll.kernel32, function)(str(path), buffer, len(buffer))
+    return Path(buffer.value) if 0 < length < len(buffer) else None
+
+
+def _path_aliases(path: Path) -> tuple[Path, ...]:
+    candidates = [path, path.resolve(), path.absolute()]
+    if os.name == "nt":
+        for candidate in tuple(candidates):
+            for function in ("GetLongPathNameW", "GetShortPathNameW"):
+                alias = _windows_path_alias(candidate, function)
+                if alias is not None:
+                    candidates.append(alias)
+    unique = []
+    seen = set()
+    for candidate in candidates:
+        identity = os.path.normcase(os.path.abspath(str(candidate)))
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(candidate)
+    return tuple(unique)
+
+
 def _rebind_database_paths(database: Path, source: Path, target: Path) -> int:
     if not database.is_file():
         return 0
     replacements = []
-    for old, new in (
-        (str(source), str(target)),
-        (str(source).replace("\\", "\\\\"), str(target).replace("\\", "\\\\")),
-        (str(source).replace("\\", "/"), str(target).replace("\\", "/")),
-    ):
-        if (old, new) not in replacements:
-            replacements.append((old, new))
+    for source_path in _path_aliases(source):
+        for old, new in (
+            (str(source_path), str(target)),
+            (str(source_path).replace("\\", "\\\\"), str(target).replace("\\", "\\\\")),
+            (str(source_path).replace("\\", "/"), str(target).replace("\\", "/")),
+        ):
+            if (old, new) not in replacements:
+                replacements.append((old, new))
     updated = 0
     connection = sqlite3.connect(str(_long_path(database)))
     try:

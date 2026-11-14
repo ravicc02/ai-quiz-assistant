@@ -104,6 +104,31 @@ class ProductCompatibilityTests(unittest.TestCase):
             with closing(sqlite3.connect(target / DATABASE_FILENAME)) as connection:
                 self.assertEqual(connection.execute("SELECT value FROM current").fetchone()[0], "current")
 
+    def test_database_paths_are_rebound_from_a_windows_short_source_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "legacy"
+            target = Path(directory) / "home" / ".mumu"
+            short_source = source.with_name("LEGACY~1")
+            source.mkdir()
+            with closing(sqlite3.connect(source / DATABASE_FILENAME)) as connection:
+                with connection:
+                    connection.execute("CREATE TABLE accounts(profile_dir TEXT)")
+                    connection.execute(
+                        "INSERT INTO accounts VALUES(?)",
+                        (str(short_source / "profiles" / "one"),),
+                    )
+            target.mkdir(parents=True)
+            with patch.dict(
+                os.environ,
+                {"MUMU_DATA": "", "ANSWER_STUDIO_DATA": ""},
+                clear=False,
+            ):
+                with patch("app.config._path_aliases", return_value=(short_source, source.resolve())):
+                    migrate_legacy_data_root(target, source=source)
+            with closing(sqlite3.connect(target / DATABASE_FILENAME)) as connection:
+                profile_dir = connection.execute("SELECT profile_dir FROM accounts").fetchone()[0]
+            self.assertEqual(profile_dir, str(target.resolve() / "profiles" / "one"))
+
     def test_legacy_root_uses_local_app_data(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict(os.environ, {"LOCALAPPDATA": directory}, clear=False):
